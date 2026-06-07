@@ -1,5 +1,17 @@
-import { contextBridge } from 'electron'
+import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
+
+// y's brick-box: the ONLY powers Userland (the renderer) can reach.
+// Each brick is a thin wrapper over an IPC call to the Kernel (main process),
+// so the Kernel stays the gatekeeper for everything privileged.
+const y = {
+  userland: {
+    read: (): Promise<string> => ipcRenderer.invoke('userland:read'),
+    getPath: (): Promise<string> => ipcRenderer.invoke('userland:path'),
+    compile: (): Promise<{ ok: boolean; code?: string; error?: string }> =>
+      ipcRenderer.invoke('userland:compile')
+  }
+}
 
 // Custom APIs for renderer
 const api = {}
@@ -11,6 +23,7 @@ if (process.contextIsolated) {
   try {
     contextBridge.exposeInMainWorld('electron', electronAPI)
     contextBridge.exposeInMainWorld('api', api)
+    contextBridge.exposeInMainWorld('y', y)
   } catch (error) {
     console.error(error)
   }
@@ -19,4 +32,6 @@ if (process.contextIsolated) {
   window.electron = electronAPI
   // @ts-ignore (define in dts)
   window.api = api
+  // @ts-ignore (define in dts)
+  window.y = y
 }
