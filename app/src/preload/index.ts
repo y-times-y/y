@@ -9,7 +9,11 @@ const y = {
     read: (): Promise<string> => ipcRenderer.invoke('userland:read'),
     getPath: (): Promise<string> => ipcRenderer.invoke('userland:path'),
     compile: (): Promise<{ ok: boolean; code?: string; error?: string }> =>
-      ipcRenderer.invoke('userland:compile')
+      ipcRenderer.invoke('userland:compile'),
+    snapshot: (): Promise<{ ok: boolean; hash?: string; count?: number; error?: string }> =>
+      ipcRenderer.invoke('userland:snapshot'),
+    revert: (): Promise<{ ok: boolean; hash?: string; count?: number; error?: string }> =>
+      ipcRenderer.invoke('userland:revert')
   }
 }
 

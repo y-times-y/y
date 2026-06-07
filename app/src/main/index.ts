@@ -2,6 +2,8 @@ import { app, shell, BrowserWindow, ipcMain } from 'electron'
 import { join } from 'path'
 import { mkdir, readFile, writeFile } from 'fs/promises'
 import { transform } from 'esbuild'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 
@@ -30,6 +32,32 @@ function userlandFile(): string {
   return join(userlandDir(), 'panel.tsx')
 }
 
+// Snapshot history lives in a git repo INSIDE the Userland folder — fully
+// separate from the project repo. We pass identity via -c flags so we never
+// touch the user's global git config, and always run with cwd = userlandDir.
+const runFile = promisify(execFile)
+
+async function git(args: string[]): Promise<string> {
+  const { stdout } = await runFile('git', args, { cwd: userlandDir() })
+  return stdout.trim()
+}
+
+async function gitCommit(message: string): Promise<void> {
+  await git(['add', '-A'])
+  await git(['-c', 'user.name=y', '-c', 'user.email=y@localhost', 'commit', '-m', message])
+}
+
+async function ensureUserlandRepo(): Promise<void> {
+  try {
+    await git(['rev-parse', '--git-dir'])
+    return // already a repo
+  } catch {
+    // not a repo yet → init and make the first save point
+  }
+  await git(['init'])
+  await gitCommit('initial userland')
+}
+
 async function ensureUserland(): Promise<void> {
   await mkdir(userlandDir(), { recursive: true })
   try {
@@ -38,6 +66,7 @@ async function ensureUserland(): Promise<void> {
     // File doesn't exist yet → seed it with the default content.
     await writeFile(userlandFile(), DEFAULT_PANEL, 'utf-8')
   }
+  await ensureUserlandRepo()
 }
 
 function createWindow(): void {
@@ -105,6 +134,41 @@ app.whenReady().then(async () => {
         target: 'es2020'
       })
       return { ok: true, code: out.code }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  // Snapshot = a git commit of the current Userland state (a save point).
+  // No-ops cleanly when nothing changed.
+  ipcMain.handle('userland:snapshot', async () => {
+    try {
+      const dirty = (await git(['status', '--porcelain'])).length > 0
+      if (dirty) await gitCommit(`snapshot ${new Date().toISOString()}`)
+      const hash = await git(['rev-parse', '--short', 'HEAD'])
+      const count = Number(await git(['rev-list', '--count', 'HEAD']))
+      return { ok: true, hash, count }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  // Revert = one step of "undo":
+  //  - uncommitted edits present → throw them away, restore the last snapshot
+  //  - already clean             → step back to the previous snapshot
+  ipcMain.handle('userland:revert', async () => {
+    try {
+      const dirty = (await git(['status', '--porcelain'])).length > 0
+      if (dirty) {
+        await git(['reset', '--hard', 'HEAD'])
+      } else {
+        const have = Number(await git(['rev-list', '--count', 'HEAD']))
+        if (have <= 1) return { ok: false, error: 'No earlier snapshot to revert to.' }
+        await git(['reset', '--hard', 'HEAD~1'])
+      }
+      const hash = await git(['rev-parse', '--short', 'HEAD'])
+      const count = Number(await git(['rev-list', '--count', 'HEAD']))
+      return { ok: true, hash, count }
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
     }

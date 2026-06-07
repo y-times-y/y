@@ -27,11 +27,13 @@ function buildComponent(code: string): React.ComponentType {
   return Component
 }
 
-// UserlandHost is KERNEL code: it compiles + mounts Userland into the slot.
+// UserlandHost is KERNEL code: it compiles + mounts Userland into the slot,
+// and snapshots every good state so a Revert is always one click away.
 function UserlandHost(): React.JSX.Element {
   const [Component, setComponent] = React.useState<React.ComponentType | null>(null)
   const [error, setError] = React.useState('')
   const [path, setPath] = React.useState('')
+  const [snap, setSnap] = React.useState<{ hash: string; count: number } | null>(null)
 
   const load = React.useCallback(async () => {
     setError('')
@@ -49,11 +51,24 @@ function UserlandHost(): React.JSX.Element {
       // Store the component via the updater form: setState(fn) would otherwise
       // CALL fn as a reducer. We want to keep the function itself in state.
       setComponent(() => Compiled)
+      // It rendered cleanly → save a snapshot (no-op if nothing changed).
+      const s = await window.y.userland.snapshot()
+      if (s.ok && s.hash) setSnap({ hash: s.hash, count: s.count ?? 0 })
     } catch (err) {
       setComponent(null)
       setError(err instanceof Error ? err.message : String(err))
     }
   }, [])
+
+  const revert = React.useCallback(async () => {
+    const r = await window.y.userland.revert()
+    if (!r.ok) {
+      setError(r.error ?? 'Could not revert')
+      return
+    }
+    // Re-compile + render the restored code.
+    await load()
+  }, [load])
 
   React.useEffect(() => {
     void load()
@@ -65,7 +80,14 @@ function UserlandHost(): React.JSX.Element {
         <button className="btn" onClick={() => void load()}>
           Reload Userland
         </button>
-        <span className="userland-path">{path}</span>
+        <button className="btn" onClick={() => void revert()}>
+          Revert
+        </button>
+        {snap && (
+          <span className="userland-path">
+            snapshot {snap.hash} · {snap.count} saved
+          </span>
+        )}
       </div>
       <div className="userland-stage">
         {error ? (
@@ -76,6 +98,7 @@ function UserlandHost(): React.JSX.Element {
           <span className="userland-path">Loading…</span>
         )}
       </div>
+      <span className="userland-path userland-meta">{path}</span>
     </div>
   )
 }

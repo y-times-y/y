@@ -8,11 +8,20 @@ interface CompileResult {
   error?: string
 }
 
+interface SnapshotResult {
+  ok: boolean
+  hash?: string
+  count?: number
+  error?: string
+}
+
 interface YApi {
   userland: {
     read: () => Promise<string>
     getPath: () => Promise<string>
     compile: () => Promise<CompileResult>
+    snapshot: () => Promise<SnapshotResult>
+    revert: () => Promise<SnapshotResult>
   }
 }
 
