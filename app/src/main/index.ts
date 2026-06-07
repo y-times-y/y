@@ -1,6 +1,7 @@
 import { app, shell, BrowserWindow, ipcMain } from 'electron'
 import { join } from 'path'
 import { mkdir, readFile, writeFile } from 'fs/promises'
+import { watch } from 'node:fs'
 import { transform } from 'esbuild'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -175,6 +176,20 @@ app.whenReady().then(async () => {
   })
 
   createWindow()
+
+  // Live edits: when panel.tsx changes on disk, tell the renderer to re-render.
+  // We watch the FOLDER (atomic saves replace the file, which breaks watching it
+  // directly) and debounce, since one save emits several fs events.
+  let watchTimer: ReturnType<typeof setTimeout> | null = null
+  watch(userlandDir(), (_event, filename) => {
+    if (filename !== 'panel.tsx') return
+    if (watchTimer) clearTimeout(watchTimer)
+    watchTimer = setTimeout(() => {
+      for (const w of BrowserWindow.getAllWindows()) {
+        if (!w.isDestroyed()) w.webContents.send('userland:changed')
+      }
+    }, 150)
+  })
 
   app.on('activate', function () {
     // On macOS it's common to re-create a window in the app when the

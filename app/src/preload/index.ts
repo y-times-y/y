@@ -13,7 +13,13 @@ const y = {
     snapshot: (): Promise<{ ok: boolean; hash?: string; count?: number; error?: string }> =>
       ipcRenderer.invoke('userland:snapshot'),
     revert: (): Promise<{ ok: boolean; hash?: string; count?: number; error?: string }> =>
-      ipcRenderer.invoke('userland:revert')
+      ipcRenderer.invoke('userland:revert'),
+    // Subscribe to live disk changes; returns an unsubscribe function.
+    onChanged: (cb: () => void): (() => void) => {
+      const listener = (): void => cb()
+      ipcRenderer.on('userland:changed', listener)
+      return () => ipcRenderer.removeListener('userland:changed', listener)
+    }
   }
 }
 

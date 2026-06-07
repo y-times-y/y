@@ -103,6 +103,13 @@ code {
   color: var(--ev-c-text-1);
 }
 
+.userland-recovery {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: flex-start;
+}
+
 .userland-meta {
   flex-shrink: 0;
   overflow: hidden;

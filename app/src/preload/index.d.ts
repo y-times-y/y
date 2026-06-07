@@ -22,6 +22,7 @@ interface YApi {
     compile: () => Promise<CompileResult>
     snapshot: () => Promise<SnapshotResult>
     revert: () => Promise<SnapshotResult>
+    onChanged: (cb: () => void) => () => void
   }
 }
 
