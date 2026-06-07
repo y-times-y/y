@@ -1,0 +1,79 @@
+@import './base.css';
+
+body {
+  overflow: hidden;
+  user-select: none;
+}
+
+#root {
+  height: 100vh;
+}
+
+code {
+  font-weight: 600;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background-color: var(--color-background-mute);
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 85%;
+}
+
+/* ---------- Kernel: the protected frame ---------- */
+.kernel-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.kernel-topbar {
+  flex-shrink: 0;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px;
+  background: var(--color-background-soft);
+  border-bottom: 1px solid var(--ev-c-gray-3);
+}
+
+.kernel-logo {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--ev-c-text-1);
+}
+
+.kernel-tag {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ev-c-text-3);
+}
+
+/* ---------- Userland: the moddable slot ---------- */
+.userland-slot {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 24px;
+}
+
+.userland-panel {
+  max-width: 560px;
+  padding: 24px;
+  border: 1px dashed var(--ev-c-gray-2);
+  border-radius: 12px;
+  background: var(--color-background-soft);
+}
+
+.userland-title {
+  font-size: 22px;
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+
+.userland-body {
+  font-size: 15px;
+  color: var(--ev-c-text-2);
+  margin-bottom: 8px;
+}
