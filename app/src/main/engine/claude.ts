@@ -49,8 +49,13 @@ class ClaudeSession implements Session {
       'stream-json',
       '--include-partial-messages', // token-by-token streaming
       '--verbose', // required alongside stream-json with -p
+      // Read-only toolset so the agent can explore the codebase but never modify
+      // it. --tools limits which built-ins exist; --allowedTools auto-approves
+      // them so headless mode (no permission prompts) doesn't silently block them.
       '--tools',
-      '' // Phase 4a: pure chat — no tool execution / permission prompts
+      'Read,Glob,Grep',
+      '--allowedTools',
+      'Read,Glob,Grep'
     ]
     if (this.opts.model) args.push('--model', this.opts.model)
     if (this.claudeSessionId) args.push('--resume', this.claudeSessionId)

@@ -11,15 +11,136 @@ import { startSession, sendToSession, cancelSession, listEngines } from './engin
 // ---- Userland lives in a writable folder, NOT inside the app bundle ----
 // It sits under Electron's per-user data dir. The app reads it at runtime,
 // which is what makes self-modification possible (the app bundle stays sealed).
-const DEFAULT_PANEL = `export default function Panel() {
+const DEFAULT_PANEL = `import { useEffect, useRef, useState } from 'react'
+
+// This chat lives in USERLAND — it's just code you can edit. It talks to the
+// coding-agent engine through window.y.engine (the bricks the Kernel exposes).
+// Change the styles, the layout, the behavior — save and watch it hot-reload.
+const LABELS = { 'claude-code': 'Claude Code', codex: 'Codex' }
+
+export default function Chat() {
+  const [engines, setEngines] = useState([])
+  const [engineId, setEngineId] = useState('claude-code')
+  const [sessionId, setSessionId] = useState(null)
+  const [messages, setMessages] = useState([])
+  const [input, setInput] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [status, setStatus] = useState('')
+  const [error, setError] = useState('')
+  const sidRef = useRef(null)
+
+  function start(id) {
+    if (sidRef.current) window.y.engine.cancel(sidRef.current)
+    sidRef.current = null
+    setSessionId(null)
+    setMessages([])
+    setStatus('')
+    setError('')
+    setBusy(false)
+    window.y.engine.start({ engine: id }).then(function (res) {
+      if (!res.ok || !res.sessionId) {
+        setError(res.error || 'Failed to start engine')
+        return
+      }
+      sidRef.current = res.sessionId
+      setSessionId(res.sessionId)
+    })
+  }
+
+  function append(list, chunk) {
+    const last = list[list.length - 1]
+    if (last && last.role === 'assistant') {
+      return list.slice(0, -1).concat([{ role: 'assistant', text: last.text + chunk }])
+    }
+    return list.concat([{ role: 'assistant', text: chunk }])
+  }
+
+  useEffect(function () {
+    const off = window.y.engine.onEvent(function (p) {
+      if (p.sessionId !== sidRef.current) return
+      const e = p.event
+      if (e.kind === 'text') {
+        setStatus('')
+        setMessages(function (m) { return append(m, e.text) })
+      } else if (e.kind === 'thinking') {
+        setStatus('thinking...')
+      } else if (e.kind === 'tool') {
+        setStatus('using ' + e.name + '...')
+      } else if (e.kind === 'result') {
+        setBusy(false)
+        setStatus('')
+        if (!e.ok) setError(e.summary || 'The engine reported an error.')
+      } else if (e.kind === 'error') {
+        setBusy(false)
+        setStatus('')
+        setError(e.message)
+      }
+    })
+    window.y.engine.list().then(function (ids) { if (ids.length) setEngines(ids) })
+    start('claude-code')
+    return off
+  }, [])
+
+  function send() {
+    const text = input.trim()
+    if (!text || !sessionId || busy) return
+    setError('')
+    setMessages(function (m) { return m.concat([{ role: 'user', text: text }]) })
+    setInput('')
+    setBusy(true)
+    setStatus('...')
+    window.y.engine.send(sessionId, text)
+  }
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      <h1 style={{ fontSize: 22, fontWeight: 700 }}>Hello from Userland — as real code</h1>
-      <p style={{ opacity: 0.7 }}>
-        This panel is a live React component, compiled at runtime by esbuild and
-        rendered into the slot. Edit this file and hit "Reload Userland" to run your
-        changes.
-      </p>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', gap: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em', opacity: 0.55 }}>engine</span>
+        <select
+          value={engineId}
+          disabled={busy}
+          onChange={function (ev) { setEngineId(ev.target.value); start(ev.target.value) }}
+          style={{ font: 'inherit', padding: '4px 8px', borderRadius: 8 }}
+        >
+          {engines.map(function (id) {
+            return <option key={id} value={id}>{LABELS[id] || id}</option>
+          })}
+        </select>
+      </div>
+
+      <div style={{ flex: 1, minHeight: 0, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {messages.length === 0 && !error ? (
+          <div style={{ margin: 'auto', opacity: 0.5 }}>Ask the engine something to start.</div>
+        ) : null}
+        {messages.map(function (m, i) {
+          return (
+            <div key={i} style={{ alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start', maxWidth: '80%', display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em', opacity: 0.5 }}>{m.role === 'user' ? 'you' : 'y'}</span>
+              <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.55, padding: '10px 14px', borderRadius: 12, border: '1px solid rgba(127,127,127,0.25)' }}>{m.text}</div>
+            </div>
+          )
+        })}
+        {status ? <div style={{ opacity: 0.5, fontStyle: 'italic' }}>{status}</div> : null}
+        {error ? <div style={{ color: '#ff7a7a', whiteSpace: 'pre-wrap' }}>{error}</div> : null}
+      </div>
+
+      <div style={{ display: 'flex', gap: 10 }}>
+        <textarea
+          value={input}
+          rows={2}
+          onChange={function (ev) { setInput(ev.target.value) }}
+          onKeyDown={function (ev) { if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); send() } }}
+          placeholder={sessionId ? 'Message the engine...' : 'Starting engine...'}
+          style={{ flex: 1, resize: 'none', font: 'inherit', fontSize: 14, padding: '10px 12px', borderRadius: 10, border: '1px solid rgba(127,127,127,0.3)', background: 'transparent', color: 'inherit' }}
+        />
+        <button
+          onClick={send}
+          disabled={!sessionId || busy}
+          style={{ alignSelf: 'flex-end', font: 'inherit', fontWeight: 600, padding: '8px 14px', borderRadius: 8, cursor: 'pointer' }}
+        >
+          {busy ? '...' : 'Send'}
+        </button>
+      </div>
     </div>
   )
 }
