@@ -2,7 +2,6 @@ import { app, shell, BrowserWindow, ipcMain } from 'electron'
 import { join } from 'path'
 import { mkdir, readFile, writeFile } from 'fs/promises'
 import { watch } from 'node:fs'
-import { transform } from 'esbuild'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -24,6 +23,36 @@ const DEFAULT_PANEL = `export default function Panel() {
   )
 }
 `
+
+// esbuild ships a native binary. In a packaged app it's unpacked next to the
+// asar (electron-builder's smartUnpack), but esbuild resolves the binary to the
+// VIRTUAL app.asar path, which the OS can't exec. Point it at the real unpacked
+// path. (No-op in dev, where node_modules resolves normally.)
+function fixEsbuildBinaryPath(): void {
+  if (!app.isPackaged || process.env.ESBUILD_BINARY_PATH) return
+  const platformDir = `${process.platform}-${process.arch}`
+  const binName = process.platform === 'win32' ? 'esbuild.exe' : join('bin', 'esbuild')
+  process.env.ESBUILD_BINARY_PATH = join(
+    process.resourcesPath,
+    'app.asar.unpacked',
+    'node_modules',
+    '@esbuild',
+    platformDir,
+    binName
+  )
+}
+
+// esbuild is loaded LAZILY (not a top-level import) on purpose: esbuild captures
+// process.env.ESBUILD_BINARY_PATH at module-load time, so it MUST load only after
+// fixEsbuildBinaryPath() has run — otherwise it caches the wrong (asar) path.
+let cachedTransform: typeof import('esbuild').transform | null = null
+async function getEsbuildTransform(): Promise<typeof import('esbuild').transform> {
+  if (!cachedTransform) {
+    const esbuild = await import('esbuild')
+    cachedTransform = esbuild.transform
+  }
+  return cachedTransform
+}
 
 function userlandDir(): string {
   return join(app.getPath('userData'), 'userland')
@@ -67,7 +96,14 @@ async function ensureUserland(): Promise<void> {
     // File doesn't exist yet → seed it with the default content.
     await writeFile(userlandFile(), DEFAULT_PANEL, 'utf-8')
   }
-  await ensureUserlandRepo()
+  // Snapshots are a safety NET, not a hard requirement. If git is missing on the
+  // user's machine, the app must still launch and self-modify — it just loses
+  // snapshot/revert/auto-rollback. So never let repo setup crash boot.
+  try {
+    await ensureUserlandRepo()
+  } catch (err) {
+    console.warn('[y] Userland git snapshots unavailable:', err)
+  }
 }
 
 function createWindow(): void {
@@ -109,6 +145,9 @@ app.whenReady().then(async () => {
   // Set app user model id for windows
   electronApp.setAppUserModelId('com.y.app')
 
+  // Make sure esbuild can find its binary in the packaged app (no-op in dev).
+  fixEsbuildBinaryPath()
+
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
   })
@@ -128,6 +167,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('userland:compile', async () => {
     try {
       const src = await readFile(userlandFile(), 'utf-8')
+      const transform = await getEsbuildTransform()
       const out = await transform(src, {
         loader: 'tsx',
         jsx: 'automatic',
