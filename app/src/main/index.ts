@@ -65,7 +65,8 @@ export default function Chat() {
       } else if (e.kind === 'thinking') {
         setStatus('thinking...')
       } else if (e.kind === 'tool') {
-        setStatus('using ' + e.name + '...')
+        setStatus('')
+        setMessages(function (m) { return m.concat([{ role: 'tool', name: e.name }]) })
       } else if (e.kind === 'result') {
         setBusy(false)
         setStatus('')
@@ -113,6 +114,15 @@ export default function Chat() {
           <div style={{ margin: 'auto', opacity: 0.5 }}>Ask the engine something to start.</div>
         ) : null}
         {messages.map(function (m, i) {
+          if (m.role === 'tool') {
+            const label = (m.name || 'tool')
+            const shown = label.length > 64 ? label.slice(0, 64) + '…' : label
+            return (
+              <div key={i} style={{ alignSelf: 'flex-start', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12, opacity: 0.65, padding: '3px 9px', borderRadius: 8, border: '1px solid rgba(127,127,127,0.2)' }}>
+                {'→ ' + shown}
+              </div>
+            )
+          }
           return (
             <div key={i} style={{ alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start', maxWidth: '80%', display: 'flex', flexDirection: 'column', gap: 4 }}>
               <span style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em', opacity: 0.5 }}>{m.role === 'user' ? 'you' : 'y'}</span>

@@ -148,6 +148,10 @@ class ClaudeSession implements Session {
       const block = ev.content_block
       if (block?.type === 'tool_use' && typeof block.name === 'string') {
         this.emit({ kind: 'tool', name: block.name, phase: 'start' })
+      } else if (block?.type === 'text' && this.streamedText) {
+        // Claude sends its between-tool narration as separate text blocks. Insert a
+        // paragraph break so they don't render as one run-on line in the chat.
+        this.emit({ kind: 'text', text: '\n\n' })
       }
     }
   }
