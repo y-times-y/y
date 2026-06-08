@@ -25,6 +25,7 @@ interface YApi {
     onChanged: (cb: () => void) => () => void
   }
   engine: {
+    list: () => Promise<string[]>
     start: (args: StartEngineArgs) => Promise<StartResult>
     send: (sessionId: string, prompt: string) => Promise<{ ok: boolean; error?: string }>
     cancel: (sessionId: string) => Promise<{ ok: boolean }>

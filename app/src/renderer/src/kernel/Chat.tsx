@@ -5,10 +5,18 @@ interface Msg {
   text: string
 }
 
-// Kernel-side chat (Phase 4a). It talks to the engine purely through the
+// Friendly names for the engine ids the Kernel reports.
+const ENGINE_LABELS: Record<string, string> = {
+  'claude-code': 'Claude Code',
+  codex: 'Codex'
+}
+
+// Kernel-side chat (Phase 4a/4b). It talks to the engine purely through the
 // window.y.engine bricks — start a session, send prompts, and append the
-// streamed text events as they arrive.
+// streamed text events as they arrive. The same code drives any engine.
 function Chat(): React.JSX.Element {
+  const [engines, setEngines] = React.useState<string[]>([])
+  const [engineId, setEngineId] = React.useState('claude-code')
   const [sessionId, setSessionId] = React.useState<string | null>(null)
   const [messages, setMessages] = React.useState<Msg[]>([])
   const [input, setInput] = React.useState('')
@@ -46,9 +54,16 @@ function Chat(): React.JSX.Element {
     }
   }, [])
 
-  // Start one engine session on mount; subscribe to its event stream.
-  React.useEffect(() => {
-    void window.y.engine.start({ engine: 'claude-code', model: 'sonnet' }).then((res) => {
+  // Start (or restart) a session for a given engine, resetting the transcript.
+  const startEngine = React.useCallback((id: string) => {
+    if (sessionIdRef.current) void window.y.engine.cancel(sessionIdRef.current)
+    sessionIdRef.current = null
+    setSessionId(null)
+    setMessages([])
+    setStatus('')
+    setError('')
+    setBusy(false)
+    void window.y.engine.start({ engine: id }).then((res) => {
       if (!res.ok || !res.sessionId) {
         setError(res.error || 'Failed to start engine')
         return
@@ -56,13 +71,30 @@ function Chat(): React.JSX.Element {
       sessionIdRef.current = res.sessionId
       setSessionId(res.sessionId)
     })
+  }, [])
 
+  // Subscribe to the event stream once for the component's lifetime. It always
+  // reads the LIVE session id from the ref, so it keeps working after a switch.
+  React.useEffect(() => {
     const off = window.y.engine.onEvent(({ sessionId: sid, event }) => {
-      if (sid !== sessionIdRef.current) return // ignore other sessions
+      if (sid !== sessionIdRef.current) return // ignore other / old sessions
       handleEvent(event)
     })
     return off
   }, [handleEvent])
+
+  // Load the available engines from the Kernel, then start the default one.
+  React.useEffect(() => {
+    void window.y.engine.list().then((ids) => {
+      if (ids.length) setEngines(ids)
+    })
+    startEngine('claude-code')
+  }, [startEngine])
+
+  const onEngineChange = (id: string): void => {
+    setEngineId(id)
+    startEngine(id)
+  }
 
   // Keep the newest message in view.
   React.useEffect(() => {
@@ -89,6 +121,23 @@ function Chat(): React.JSX.Element {
 
   return (
     <div className="chat">
+      <div className="chat-header">
+        <label className="chat-engine">
+          engine
+          <select
+            value={engineId}
+            onChange={(e) => onEngineChange(e.target.value)}
+            disabled={busy}
+          >
+            {engines.map((id) => (
+              <option key={id} value={id}>
+                {ENGINE_LABELS[id] ?? id}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
       <div className="chat-log" ref={logRef}>
         {messages.length === 0 && !error && (
           <div className="chat-empty">Ask the engine something to start.</div>

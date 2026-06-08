@@ -23,6 +23,7 @@ const y = {
   },
   // Engine bricks: drive a coding-agent CLI and receive its streamed output.
   engine: {
+    list: (): Promise<string[]> => ipcRenderer.invoke('engine:list'),
     start: (args: { engine: string; model?: string; cwd?: string }) =>
       ipcRenderer.invoke('engine:start', args),
     send: (sessionId: string, prompt: string) =>

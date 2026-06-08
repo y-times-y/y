@@ -1,10 +1,13 @@
 import { BrowserWindow } from 'electron'
 import type { AgentEvent, Engine, Session } from './types'
 import { claudeEngine } from './claude'
+import { codexEngine } from './codex'
 
-// The engines y knows about. Adding Codex later is just one more entry here.
+// The engines y knows about. Adding a new engine is just one more entry here —
+// the IPC, the streaming, and the entire chat UI stay exactly the same.
 const engines: Record<string, Engine> = {
-  [claudeEngine.id]: claudeEngine
+  [claudeEngine.id]: claudeEngine,
+  [codexEngine.id]: codexEngine
 }
 
 // Live conversations, keyed by our session id.
@@ -50,4 +53,9 @@ export function sendToSession(sessionId: string, prompt: string): { ok: boolean;
 export function cancelSession(sessionId: string): { ok: boolean } {
   sessions.get(sessionId)?.cancel()
   return { ok: true }
+}
+
+// The ids the UI can offer in its engine picker — Kernel is the source of truth.
+export function listEngines(): string[] {
+  return Object.keys(engines)
 }
