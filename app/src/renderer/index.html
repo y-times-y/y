@@ -4,9 +4,14 @@
     <meta charset="UTF-8" />
     <title>y</title>
     <!-- https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP -->
+    <!-- Phase 6: scripts stay locked to 'self' (+ unsafe-eval for the Userland
+         compile seam), but we allow embedding web content (frame-src/webview)
+         and loading remote images/media so Userland can build browsers and
+         widgets. Arbitrary network still goes through the consent-gated y.net
+         brick in main, not direct renderer fetch (connect-src stays 'self'). -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+      content="default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: http:; font-src 'self' data: https:; media-src 'self' data: https: http:; frame-src *; child-src *"
     />
   </head>
 

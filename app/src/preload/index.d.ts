@@ -32,6 +32,17 @@ interface YApi {
     cancel: (sessionId: string) => Promise<{ ok: boolean }>
     onEvent: (cb: (payload: EngineEventPayload) => void) => () => void
   }
+  net: {
+    request: (req: NetRequest) => Promise<NetResult>
+  }
+  files: {
+    root: () => Promise<string>
+    list: (path?: string) => Promise<FilesListResult>
+    read: (path: string) => Promise<FilesReadResult>
+    write: (path: string, contents: string) => Promise<FilesResult>
+    mkdir: (path: string) => Promise<FilesResult>
+    remove: (path: string) => Promise<FilesResult>
+  }
 }
 
 declare global {
@@ -59,6 +70,34 @@ declare global {
     ok: boolean
     sessionId?: string
     error?: string
+  }
+
+  interface NetRequest {
+    url: string
+    method?: string
+    headers?: Record<string, string>
+    body?: string
+  }
+
+  interface NetResult {
+    ok: boolean
+    status?: number
+    headers?: Record<string, string>
+    body?: string
+    error?: string
+  }
+
+  interface FilesResult {
+    ok: boolean
+    error?: string
+  }
+
+  interface FilesListResult extends FilesResult {
+    entries?: { name: string; dir: boolean }[]
+  }
+
+  interface FilesReadResult extends FilesResult {
+    contents?: string
   }
 
   interface Window {

@@ -16,7 +16,12 @@ const PREAMBLE =
   'panel.tsx — a single default-exported React component that y renders live as the ' +
   "app's main UI. When I ask for a change, EDIT panel.tsx to make it. Keep it a valid " +
   'TSX file with exactly one default export. The app hot-reloads on save, so just edit ' +
-  'the file — do not run build commands. Prefer small, focused edits. Request:\n\n'
+  'the file — do not run build commands. Only `react` can be imported; everything else ' +
+  'is on the global `window.y`. Available capability bricks (each prompts the user for ' +
+  'consent the first time): window.y.net.request({url,method,headers,body}) -> ' +
+  '{ok,status,body} for network/APIs; window.y.files.{list,read,write,mkdir,remove}(path) ' +
+  'for a private workspace folder; and the <webview src=…> tag is enabled for embedding ' +
+  'web pages (e.g. to build a browser). Prefer small, focused edits. Request:\n\n'
 
 function append(list: Msg[], chunk: string): Msg[] {
   const last = list[list.length - 1]

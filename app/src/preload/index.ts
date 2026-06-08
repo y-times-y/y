@@ -40,6 +40,26 @@ const y = {
       ipcRenderer.on('engine:event', listener)
       return () => ipcRenderer.removeListener('engine:event', listener)
     }
+  },
+  // ---- Capability bricks (Phase 6): general powers Userland composes into ----
+  // features. Each is consent-gated in main; Userland can't bypass the prompt.
+  // Network: a fetch proxied through main (no renderer CSP limits).
+  net: {
+    request: (req: {
+      url: string
+      method?: string
+      headers?: Record<string, string>
+      body?: string
+    }) => ipcRenderer.invoke('net:request', req)
+  },
+  // Files: read/write a private workspace folder (paths are locked inside it).
+  files: {
+    root: (): Promise<string> => ipcRenderer.invoke('files:root'),
+    list: (path?: string) => ipcRenderer.invoke('files:list', path ?? '.'),
+    read: (path: string) => ipcRenderer.invoke('files:read', path),
+    write: (path: string, contents: string) => ipcRenderer.invoke('files:write', path, contents),
+    mkdir: (path: string) => ipcRenderer.invoke('files:mkdir', path),
+    remove: (path: string) => ipcRenderer.invoke('files:remove', path)
   }
 }
 

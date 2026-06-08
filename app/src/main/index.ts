@@ -7,6 +7,7 @@ import { promisify } from 'node:util'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { startSession, sendToSession, cancelSession, listEngines } from './engine'
+import { ensureWorkspace, registerCapabilityBricks } from './capabilities'
 
 // ---- Userland lives in a writable folder, NOT inside the app bundle ----
 // It sits under Electron's per-user data dir. The app reads it at runtime,
@@ -248,7 +249,11 @@ function createWindow(): void {
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
-      sandbox: false
+      sandbox: false,
+      // Phase 6: let Userland embed web content via the <webview> tag — the
+      // generic "embed" capability (a browser is just one thing you can build
+      // with it). Not special-cased to any feature.
+      webviewTag: true
     }
   })
 
@@ -286,6 +291,8 @@ app.whenReady().then(async () => {
 
   // Make sure the writable Userland folder + seed file exist before the UI loads.
   await ensureUserland()
+  // Phase 6: create Userland's sandboxed workspace folder + load saved consent.
+  await ensureWorkspace()
 
   // ---- y's first real "bricks": two-way IPC the renderer can call ----
   // ipcMain.handle returns a value back to the caller (unlike ipcMain.on,
@@ -363,6 +370,9 @@ app.whenReady().then(async () => {
     sendToSession(sessionId, prompt)
   )
   ipcMain.handle('engine:cancel', (_e, sessionId: string) => cancelSession(sessionId))
+
+  // ---- Capability bricks (Phase 6): network + scoped filesystem, consent-gated.
+  registerCapabilityBricks()
 
   createWindow()
 
