@@ -17,6 +17,7 @@ interface StartArgs {
   engine: string
   model?: string
   cwd?: string
+  mode?: 'read' | 'write'
 }
 
 // The "streaming IPC": fire one push per event, tagged with the session id so
@@ -35,8 +36,9 @@ export function startSession(args: StartArgs): { ok: boolean; sessionId?: string
   // The session owns its id (created in its constructor). The emit callback
   // needs that id; it only fires after send(), by which point `id` is set.
   let id = ''
-  const session = engine.startSession({ model: args.model, cwd: args.cwd }, (event) =>
-    broadcast(id, event)
+  const session = engine.startSession(
+    { model: args.model, cwd: args.cwd, mode: args.mode },
+    (event) => broadcast(id, event)
   )
   id = session.id
   sessions.set(id, session)

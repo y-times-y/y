@@ -44,12 +44,15 @@ class CodexSession implements Session {
       '--json', // JSONL events on stdout
       '--skip-git-repo-check' // the chat's cwd may not be a git repo
     ]
+    // Read mode (normal chat) = read-only. Write mode (Modify chat) =
+    // workspace-write, which OS-scopes writes to the cwd (the Userland dir).
     // --sandbox is only valid on the initial `exec`; `resume` rejects the flag,
-    // so we pin read-only there via a -c config override instead (verified flow).
+    // so we pin the mode there via a -c config override instead (verified flow).
+    const sandbox = this.opts.mode === 'write' ? 'workspace-write' : 'read-only'
     if (resuming) {
-      args.push('-c', 'sandbox_mode=read-only') // Phase 4b: no writes on resume
+      args.push('-c', 'sandbox_mode=' + sandbox)
     } else {
-      args.push('--sandbox', 'read-only') // Phase 4b: no writes
+      args.push('--sandbox', sandbox)
     }
     if (this.opts.model) args.push('-m', this.opts.model)
 

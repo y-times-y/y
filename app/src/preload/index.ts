@@ -26,6 +26,9 @@ const y = {
     list: (): Promise<string[]> => ipcRenderer.invoke('engine:list'),
     start: (args: { engine: string; model?: string; cwd?: string }) =>
       ipcRenderer.invoke('engine:start', args),
+    // Modify session: write access pinned to the Userland dir (Kernel-controlled).
+    startModify: (args: { engine: string; model?: string }) =>
+      ipcRenderer.invoke('engine:startModify', args),
     send: (sessionId: string, prompt: string) =>
       ipcRenderer.invoke('engine:send', sessionId, prompt),
     cancel: (sessionId: string) => ipcRenderer.invoke('engine:cancel', sessionId),

@@ -351,7 +351,14 @@ app.whenReady().then(async () => {
   // start returns a session id; send/cancel act on it; the actual reply streams
   // back as 'engine:event' pushes (see engine/index.ts → broadcast).
   ipcMain.handle('engine:list', () => listEngines())
-  ipcMain.handle('engine:start', (_e, args) => startSession(args))
+  // Normal chat: always read-only — it can never modify the app, no matter what
+  // the (Userland) caller asks. The rule from §5 enforced at the brick layer.
+  ipcMain.handle('engine:start', (_e, args) => startSession({ ...args, mode: 'read' }))
+  // Modify chat (Kernel-only): write access, pinned to the Userland dir so the
+  // agent's edits are scoped there and can never reach y's own source.
+  ipcMain.handle('engine:startModify', (_e, args: { engine: string; model?: string }) =>
+    startSession({ engine: args.engine, model: args.model, cwd: userlandDir(), mode: 'write' })
+  )
   ipcMain.handle('engine:send', (_e, sessionId: string, prompt: string) =>
     sendToSession(sessionId, prompt)
   )
