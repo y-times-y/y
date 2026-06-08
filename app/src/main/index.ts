@@ -6,6 +6,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
+import { startSession, sendToSession, cancelSession } from './engine'
 
 // ---- Userland lives in a writable folder, NOT inside the app bundle ----
 // It sits under Electron's per-user data dir. The app reads it at runtime,
@@ -214,6 +215,15 @@ app.whenReady().then(async () => {
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
     }
   })
+
+  // ---- Engine bricks (Phase 4): drive a coding-agent CLI from the renderer ----
+  // start returns a session id; send/cancel act on it; the actual reply streams
+  // back as 'engine:event' pushes (see engine/index.ts → broadcast).
+  ipcMain.handle('engine:start', (_e, args) => startSession(args))
+  ipcMain.handle('engine:send', (_e, sessionId: string, prompt: string) =>
+    sendToSession(sessionId, prompt)
+  )
+  ipcMain.handle('engine:cancel', (_e, sessionId: string) => cancelSession(sessionId))
 
   createWindow()
 

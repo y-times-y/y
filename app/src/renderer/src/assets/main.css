@@ -50,12 +50,126 @@ code {
   color: var(--ev-c-text-3);
 }
 
-/* ---------- Userland: the moddable slot ---------- */
-.userland-slot {
+/* ---------- Kernel body: chat (primary) + Userland rail ---------- */
+.kernel-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+/* ---------- Chat: the engine conversation ---------- */
+.chat-slot {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+}
+
+.chat {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-log {
   flex: 1;
   min-height: 0;
   overflow: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.chat-empty {
+  margin: auto;
+  color: var(--ev-c-text-3);
+  font-size: 14px;
+}
+
+.chat-msg {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 680px;
+}
+
+.chat-user {
+  align-self: flex-end;
+  align-items: flex-end;
+}
+
+.chat-role {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ev-c-text-3);
+}
+
+.chat-text {
+  white-space: pre-wrap;
+  line-height: 1.55;
+  color: var(--ev-c-text-1);
+  background: var(--color-background-soft);
+  border: 1px solid var(--ev-c-gray-3);
+  border-radius: 12px;
+  padding: 10px 14px;
+}
+
+.chat-user .chat-text {
+  background: var(--ev-c-gray-3);
+}
+
+.chat-status {
+  font-size: 13px;
+  color: var(--ev-c-text-3);
+  font-style: italic;
+}
+
+.chat-error {
+  white-space: pre-wrap;
+  color: #ff7a7a;
+  font-size: 13px;
+}
+
+.chat-input {
+  flex-shrink: 0;
+  display: flex;
+  gap: 10px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--ev-c-gray-3);
+}
+
+.chat-input textarea {
+  flex: 1;
+  resize: none;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--ev-c-text-1);
+  background: var(--color-background-soft);
+  border: 1px solid var(--ev-c-gray-2);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.chat-input textarea:focus {
+  outline: none;
+  border-color: var(--ev-c-gray-1);
+}
+
+.chat-input .btn {
+  align-self: flex-end;
+}
+
+/* ---------- Userland: the moddable slot (now a side rail) ---------- */
+.userland-slot {
+  flex-shrink: 0;
+  width: 340px;
+  min-height: 0;
+  overflow: auto;
   padding: 24px;
+  border-left: 1px solid var(--ev-c-gray-3);
 }
 
 .userland-host {

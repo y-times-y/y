@@ -20,6 +20,22 @@ const y = {
       ipcRenderer.on('userland:changed', listener)
       return () => ipcRenderer.removeListener('userland:changed', listener)
     }
+  },
+  // Engine bricks: drive a coding-agent CLI and receive its streamed output.
+  engine: {
+    start: (args: { engine: string; model?: string; cwd?: string }) =>
+      ipcRenderer.invoke('engine:start', args),
+    send: (sessionId: string, prompt: string) =>
+      ipcRenderer.invoke('engine:send', sessionId, prompt),
+    cancel: (sessionId: string) => ipcRenderer.invoke('engine:cancel', sessionId),
+    // The streaming side: fires for every event the engine emits. The callback
+    // gets { sessionId, event } so a chat can ignore events from other sessions.
+    onEvent: (cb: (payload: { sessionId: string; event: unknown }) => void): (() => void) => {
+      const listener = (_e: unknown, payload: { sessionId: string; event: unknown }): void =>
+        cb(payload)
+      ipcRenderer.on('engine:event', listener)
+      return () => ipcRenderer.removeListener('engine:event', listener)
+    }
   }
 }
 
