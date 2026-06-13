@@ -7,7 +7,15 @@ export type AgentEvent =
   | { kind: 'session'; sessionId: string } // engine reported its conversation id
   | { kind: 'text'; text: string } // a chunk of assistant reply
   | { kind: 'thinking'; text: string } // a chunk of reasoning (optional)
-  | { kind: 'tool'; name: string; phase: 'start' | 'end' } // tool activity
+  | {
+      kind: 'tool'
+      name: string
+      phase: 'start' | 'update' | 'end'
+      id?: string
+      verb?: string // lowercase action shown inline: read, edit…
+      target?: string // file, pattern, or command
+      body?: string // diff preview or snippet
+    } // tool activity
   | { kind: 'result'; ok: boolean; summary?: string } // the turn finished
   | { kind: 'error'; message: string } // something went wrong
 

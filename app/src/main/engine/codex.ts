@@ -140,9 +140,19 @@ class CodexSession implements Session {
       case 'reasoning':
         if (typeof item.text === 'string') this.emit({ kind: 'thinking', text: item.text })
         break
-      case 'command_execution':
-        this.emit({ kind: 'tool', name: item.command || 'shell', phase: 'end' })
+      case 'command_execution': {
+        const cmd = item.command || 'shell'
+        const target = cmd.length > 96 ? cmd.slice(0, 96) + '…' : cmd
+        this.emit({
+          kind: 'tool',
+          name: 'shell',
+          phase: 'end',
+          verb: 'run',
+          target,
+          body: cmd
+        })
         break
+      }
     }
   }
 }

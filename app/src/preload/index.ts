@@ -1,6 +1,15 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 
+let modifyOpen = false
+const modifyListeners = new Set<(open: boolean) => void>()
+
+function emitModify(open: boolean): void {
+  if (modifyOpen === open) return
+  modifyOpen = open
+  modifyListeners.forEach((cb) => cb(open))
+}
+
 // y's brick-box: the ONLY powers Userland (the renderer) can reach.
 // Each brick is a thin wrapper over an IPC call to the Kernel (main process),
 // so the Kernel stays the gatekeeper for everything privileged.
@@ -14,6 +23,15 @@ const y = {
       ipcRenderer.invoke('userland:snapshot'),
     revert: (): Promise<{ ok: boolean; hash?: string; count?: number; error?: string }> =>
       ipcRenderer.invoke('userland:revert'),
+    // The pending change since the last snapshot (for the Keep/Discard gate).
+    diff: (): Promise<{
+      ok: boolean
+      dirty?: boolean
+      diff?: string
+      hash?: string
+      count?: number
+      error?: string
+    }> => ipcRenderer.invoke('userland:diff'),
     // Subscribe to live disk changes; returns an unsubscribe function.
     onChanged: (cb: () => void): (() => void) => {
       const listener = (): void => cb()
@@ -60,6 +78,16 @@ const y = {
     write: (path: string, contents: string) => ipcRenderer.invoke('files:write', path, contents),
     mkdir: (path: string) => ipcRenderer.invoke('files:mkdir', path),
     remove: (path: string) => ipcRenderer.invoke('files:remove', path)
+  },
+  modify: {
+    open: () => emitModify(true),
+    close: () => emitModify(false),
+    toggle: () => emitModify(!modifyOpen),
+    onChange: (cb: (open: boolean) => void): (() => void) => {
+      modifyListeners.add(cb)
+      cb(modifyOpen)
+      return () => modifyListeners.delete(cb)
+    }
   }
 }
 

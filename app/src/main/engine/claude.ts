@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import type { AgentEvent, Engine, Session, StartOpts } from './types'
+import { formatToolFinal, formatToolStream, type ToolPresentation } from './toolFormat'
 
 // The subset of Claude Code's stream-json output we read. The CLI emits one of
 // these JSON objects per line; we only pick out the fields we care about.
@@ -11,13 +12,29 @@ interface ClaudeLine {
   is_error?: boolean
   result?: unknown
   event?: ClaudeStreamEvent
-  message?: { content?: Array<{ type?: string; text?: string; name?: string }> }
+  message?: {
+    content?: Array<{
+      type?: string
+      text?: string
+      thinking?: string
+      name?: string
+      id?: string
+      input?: Record<string, unknown>
+    }>
+  }
 }
 
 interface ClaudeStreamEvent {
   type?: string
-  delta?: { type?: string; text?: string; thinking?: string }
-  content_block?: { type?: string; name?: string }
+  index?: number
+  delta?: { type?: string; text?: string; thinking?: string; partial_json?: string }
+  content_block?: { type?: string; name?: string; id?: string; input?: Record<string, unknown> }
+}
+
+interface ToolBlock {
+  id?: string
+  name: string
+  json: string
 }
 
 // Drives the official `claude` CLI in non-interactive streaming mode. Each turn
@@ -28,6 +45,7 @@ class ClaudeSession implements Session {
   private claudeSessionId: string | null = null // claude's id — for --resume
   private child: ChildProcess | null = null
   private streamedText = false // did we already stream deltas this turn?
+  private blocks = new Map<number, ToolBlock>() // in-flight tool_use blocks by index
 
   constructor(
     private opts: StartOpts,
@@ -41,6 +59,7 @@ class ClaudeSession implements Session {
       return
     }
     this.streamedText = false
+    this.blocks.clear()
 
     // Read mode (the normal chat): explore only. Write mode (the Modify chat):
     // also allow Edit/Write so the agent can change Userland. --tools limits which
@@ -93,6 +112,7 @@ class ClaudeSession implements Session {
 
     child.on('close', (code) => {
       this.child = null
+      this.blocks.clear()
       if (code !== 0 && code !== null) {
         this.emit({ kind: 'error', message: stderr.trim() || `claude exited with code ${code}` })
       }
@@ -102,6 +122,7 @@ class ClaudeSession implements Session {
   cancel(): void {
     this.child?.kill('SIGTERM')
     this.child = null
+    this.blocks.clear()
   }
 
   private handleLine(line: string): void {
@@ -124,7 +145,9 @@ class ClaudeSession implements Session {
         if (obj.event) this.handleStreamEvent(obj.event)
         break
       case 'assistant':
-        // Fallback: if we never saw partial deltas, surface the full text block.
+        // Always surface tool_use from the full assistant message — it has the
+        // complete input even when stream-json redacts thinking or we miss deltas.
+        this.emitAssistantTools(obj.message)
         if (!this.streamedText) this.emitAssistantText(obj.message)
         break
       case 'result':
@@ -138,24 +161,61 @@ class ClaudeSession implements Session {
   }
 
   private handleStreamEvent(ev: ClaudeStreamEvent): void {
+    const idx = ev.index
     if (ev.type === 'content_block_delta') {
       const d = ev.delta
       if (d?.type === 'text_delta' && typeof d.text === 'string') {
         this.streamedText = true
         this.emit({ kind: 'text', text: d.text })
-      } else if (d?.type === 'thinking_delta' && typeof d.thinking === 'string') {
+      } else if (d?.type === 'thinking_delta' && typeof d.thinking === 'string' && d.thinking) {
+        // Claude Code redacts extended thinking in stream-json — skip empty deltas.
         this.emit({ kind: 'thinking', text: d.thinking })
+      } else if (
+        d?.type === 'input_json_delta' &&
+        typeof d.partial_json === 'string' &&
+        typeof idx === 'number'
+      ) {
+        this.updateToolInput(idx, d.partial_json, 'update')
       }
     } else if (ev.type === 'content_block_start') {
       const block = ev.content_block
-      if (block?.type === 'tool_use' && typeof block.name === 'string') {
-        this.emit({ kind: 'tool', name: block.name, phase: 'start' })
+      if (block?.type === 'tool_use' && typeof block.name === 'string' && typeof idx === 'number') {
+        const seed =
+          block.input && Object.keys(block.input).length > 0 ? JSON.stringify(block.input) : ''
+        this.blocks.set(idx, { id: block.id, name: block.name, json: seed })
+        this.emitTool(block.name, block.id, 'start', formatToolStream(block.name, seed))
       } else if (block?.type === 'text' && this.streamedText) {
         // Claude sends its between-tool narration as separate text blocks. Insert a
         // paragraph break so they don't render as one run-on line in the chat.
         this.emit({ kind: 'text', text: '\n\n' })
       }
+    } else if (ev.type === 'content_block_stop' && typeof idx === 'number') {
+      this.finishToolBlock(idx)
     }
+  }
+
+  private emitTool(
+    name: string,
+    id: string | undefined,
+    phase: 'start' | 'update' | 'end',
+    presentation: ToolPresentation
+  ): void {
+    this.emit({ kind: 'tool', name, id, phase, ...presentation })
+  }
+
+  private updateToolInput(index: number, chunk: string, phase: 'update' | 'end'): void {
+    const block = this.blocks.get(index)
+    if (!block) return
+    block.json += chunk
+    const presentation =
+      phase === 'end' ? formatToolFinal(block.name, block.json) : formatToolStream(block.name, block.json)
+    this.emitTool(block.name, block.id, phase, presentation)
+  }
+
+  private finishToolBlock(index: number): void {
+    if (!this.blocks.has(index)) return
+    this.updateToolInput(index, '', 'end')
+    this.blocks.delete(index)
   }
 
   private emitAssistantText(message: ClaudeLine['message']): void {
@@ -165,6 +225,16 @@ class ClaudeSession implements Session {
       if (block?.type === 'text' && typeof block.text === 'string') {
         this.emit({ kind: 'text', text: block.text })
       }
+    }
+  }
+
+  private emitAssistantTools(message: ClaudeLine['message']): void {
+    const content = message?.content
+    if (!Array.isArray(content)) return
+    for (const block of content) {
+      if (block?.type !== 'tool_use' || typeof block.name !== 'string') continue
+      const json = block.input ? JSON.stringify(block.input) : ''
+      this.emitTool(block.name, block.id, 'end', formatToolFinal(block.name, json))
     }
   }
 }

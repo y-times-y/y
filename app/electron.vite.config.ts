@@ -6,9 +6,11 @@ export default defineConfig({
   main: {
     build: {
       rollupOptions: {
-        // esbuild ships a native binary — don't bundle it into main;
-        // keep it external so it's required from node_modules at runtime.
-        external: ['esbuild']
+        // Keep these external — required from node_modules at runtime, not bundled:
+        //  - esbuild: ships a native binary.
+        //  - isomorphic-git: CJS with dynamic require()s (safe-buffer/sha.js) that
+        //    don't survive bundling; diff rides along with it.
+        external: ['esbuild', 'isomorphic-git', 'diff']
       }
     }
   },
@@ -16,7 +18,8 @@ export default defineConfig({
   renderer: {
     resolve: {
       alias: {
-        '@renderer': resolve('src/renderer/src')
+        '@renderer': resolve('src/renderer/src'),
+        '@userland-seed': resolve('userland-seed')
       }
     },
     plugins: [react()]

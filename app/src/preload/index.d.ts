@@ -15,6 +15,15 @@ interface SnapshotResult {
   error?: string
 }
 
+interface DiffResult {
+  ok: boolean
+  dirty?: boolean
+  diff?: string
+  hash?: string
+  count?: number
+  error?: string
+}
+
 interface YApi {
   userland: {
     read: () => Promise<string>
@@ -22,6 +31,7 @@ interface YApi {
     compile: () => Promise<CompileResult>
     snapshot: () => Promise<SnapshotResult>
     revert: () => Promise<SnapshotResult>
+    diff: () => Promise<DiffResult>
     onChanged: (cb: () => void) => () => void
   }
   engine: {
@@ -43,6 +53,12 @@ interface YApi {
     mkdir: (path: string) => Promise<FilesResult>
     remove: (path: string) => Promise<FilesResult>
   }
+  modify: {
+    open: () => void
+    close: () => void
+    toggle: () => void
+    onChange: (cb: (open: boolean) => void) => () => void
+  }
 }
 
 declare global {
@@ -51,7 +67,15 @@ declare global {
     | { kind: 'session'; sessionId: string }
     | { kind: 'text'; text: string }
     | { kind: 'thinking'; text: string }
-    | { kind: 'tool'; name: string; phase: 'start' | 'end' }
+    | {
+        kind: 'tool'
+        name: string
+        phase: 'start' | 'update' | 'end'
+        id?: string
+        verb?: string
+        target?: string
+        body?: string
+      }
     | { kind: 'result'; ok: boolean; summary?: string }
     | { kind: 'error'; message: string }
 
