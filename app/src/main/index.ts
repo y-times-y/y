@@ -115,7 +115,7 @@ function createWindow(): void {
           // Lose the separate macOS title-bar strip (the brown bar above the UI).
           // Traffic lights float over the sidebar; the header drag region moves the window.
           titleBarStyle: 'hiddenInset',
-          trafficLightPosition: { x: 16, y: 16 }
+          trafficLightPosition: { x: 14, y: 20 }
         }
       : {}),
     ...(process.platform === 'linux' ? { icon } : {}),
@@ -132,6 +132,13 @@ function createWindow(): void {
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()
   })
+
+  mainWindow.on('enter-full-screen', () =>
+    mainWindow.webContents.send('window:fullscreen', true)
+  )
+  mainWindow.on('leave-full-screen', () =>
+    mainWindow.webContents.send('window:fullscreen', false)
+  )
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)

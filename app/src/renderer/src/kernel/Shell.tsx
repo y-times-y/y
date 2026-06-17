@@ -14,6 +14,9 @@ function Shell(): React.JSX.Element {
     if (window.electron?.process?.platform === 'darwin') {
       document.documentElement.classList.add('platform-darwin')
     }
+    return window.electron?.ipcRenderer?.on('window:fullscreen', (_e, full: boolean) => {
+      document.documentElement.classList.toggle('is-fullscreen', full)
+    })
   }, [])
 
   return (

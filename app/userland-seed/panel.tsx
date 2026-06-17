@@ -847,8 +847,8 @@ function Icon({ name, size = 16 }: { name: string; size?: number }) {
   if (name === 'panel')
     return (
       <svg style={s} viewBox="0 0 20 20" fill="none" aria-hidden>
-        <rect x="3" y="4" width="5" height="12" rx="1" stroke="currentColor" strokeWidth={sw} />
-        <rect x="9" y="4" width="8" height="12" rx="1" stroke="currentColor" strokeWidth={sw} />
+        <rect x="3" y="5" width="5" height="11" rx="1" stroke="currentColor" strokeWidth={sw} />
+        <rect x="9" y="5" width="8" height="11" rx="1" stroke="currentColor" strokeWidth={sw} />
       </svg>
     )
   if (name === 'folder')
@@ -2426,7 +2426,10 @@ export default function Chat() {
           --y-toggle-x: 10px;
         }
         html.platform-darwin .y-app {
-          --y-toggle-x: 84px;
+          --y-toggle-x: 79px;
+        }
+        html.platform-darwin.is-fullscreen .y-app {
+          --y-toggle-x: 10px;
         }
         .y-sidebar {
           width: 252px;
@@ -2488,9 +2491,10 @@ export default function Chat() {
         .y-sidebar-toggle-slot {
           flex-shrink: 0;
           display: flex;
-          align-items: center;
+          align-items: flex-start;
           height: 44px;
           padding-left: var(--y-toggle-x);
+          padding-top: 12px;
           -webkit-app-region: no-drag;
           pointer-events: auto;
         }
@@ -2503,12 +2507,12 @@ export default function Chat() {
           background: transparent;
           color: var(--y-text-2);
           cursor: pointer;
-          display: flex;
-          align-items: center;
-          justify-content: center;
+          display: grid;
+          place-items: center;
           -webkit-app-region: no-drag;
           flex-shrink: 0;
           padding: 0;
+          line-height: 0;
         }
         .y-sidebar-toggle svg,
         .y-toolbar-btn svg { width: 16px; height: 16px; display: block; }
