@@ -341,12 +341,12 @@ function FolderIcon({ open, size = 20 }: { open: boolean; size?: number }) {
     <svg width={size} height={size} viewBox="0 0 20 20" fill="none" style={s}>
       {open ? (
         <>
-          <path d="M3 7.5A1.5 1.5 0 014.5 6H8l1.5 1.5H16.5A1.5 1.5 0 0118 9v6A1.5 1.5 0 0116.5 16h-12A1.5 1.5 0 013 14.5V7.5z"
+          <path d="M4 8A1.5 1.5 0 015.5 6.5H8l1.5 1.5H14.5A1.5 1.5 0 0116 9.5v5A1.5 1.5 0 0114.5 16h-9A1.5 1.5 0 014 14.5V8z"
             stroke={stroke} strokeWidth="1.25" strokeLinejoin="round"/>
-          <path d="M3 9h15" stroke={stroke} strokeWidth="1.1" strokeLinecap="round"/>
+          <path d="M4 9.5h12" stroke={stroke} strokeWidth="1.1" strokeLinecap="round"/>
         </>
       ) : (
-        <path d="M3 7.5A1.5 1.5 0 014.5 6H8l1.5 1.5H16.5A1.5 1.5 0 0118 9v5.5A1.5 1.5 0 0116.5 16h-12A1.5 1.5 0 013 14.5V7.5z"
+        <path d="M4 8A1.5 1.5 0 015.5 6.5H8l1.5 1.5H14.5A1.5 1.5 0 0116 9.5v5A1.5 1.5 0 0114.5 16h-9A1.5 1.5 0 014 14.5V8z"
           stroke={stroke} strokeWidth="1.25" strokeLinejoin="round"/>
       )}
     </svg>
@@ -2519,8 +2519,10 @@ export default function Chat() {
         .y-project-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .y-project-icon { opacity: 0.72; display: flex; align-items: center; }
         .y-chevron {
-          display: flex; align-items: center; opacity: 0.45; transition: transform 0.15s ease;
+          display: flex; align-items: center; margin-left: auto; flex-shrink: 0;
+          opacity: 0; transition: opacity 0.12s ease, transform 0.15s ease;
         }
+        .y-project-head:hover .y-chevron { opacity: 0.45; }
         .y-project.is-closed .y-chevron { transform: rotate(-90deg); }
         .y-chat-list {
           margin: 2px 0 0 10px; padding-left: 12px;
@@ -3095,16 +3097,16 @@ export default function Chat() {
               <div className="y-section-label">Open folders</div>
               {filteredProjects.length === 0 ? (
                 <button type="button" className="y-empty-projects" onClick={() => void openProject()}>
-                  <span className="y-project-icon"><Icon name="folder" size={14} /></span>
+                  <span className="y-project-icon"><FolderIcon open={false} size={14} /></span>
                   Add a folder
                 </button>
               ) : null}
               {filteredProjects.map((proj) => (
                 <div key={proj.id} className={'y-project' + (proj.open ? '' : ' is-closed')}>
                   <button type="button" className="y-project-head" title={proj.path} onClick={() => toggleProject(proj.id)}>
-                    <span className="y-chevron"><Icon name="chevron" size={12} /></span>
-                    <span className="y-project-icon"><Icon name="folder" size={14} /></span>
+                    <span className="y-project-icon"><FolderIcon open={proj.open} size={20} /></span>
                     <span className="y-project-name">{proj.name}</span>
+                    <span className="y-chevron"><Icon name="chevron" size={11} /></span>
                   </button>
                   {proj.open ? (
 	                    <div className="y-chat-list" data-runtime-version={runtimeVersion}>
