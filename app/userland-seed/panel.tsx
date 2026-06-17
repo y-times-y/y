@@ -2831,7 +2831,16 @@ export default function Chat() {
           display: inline-flex; align-items: center; gap: 8px;
         }
         .y-empty-action:hover { background: rgba(255,255,255,0.09); }
-        .y-log { flex: 1; min-height: 0; overflow: auto; padding: 28px 24px 12px; user-select: text; }
+        .y-log { flex: 1; min-height: 0; overflow: auto; padding: 28px 24px 12px; user-select: text; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.12) transparent; }
+        .y-log::-webkit-scrollbar { width: 5px; }
+        .y-log::-webkit-scrollbar-track { background: transparent; }
+        .y-log::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 99px; }
+        .y-log::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.22); }
+        .y-composer textarea { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.1) transparent; }
+        .y-composer textarea::-webkit-scrollbar { width: 4px; }
+        .y-composer textarea::-webkit-scrollbar-track { background: transparent; }
+        .y-composer textarea::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 99px; }
+        .y-composer textarea::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
         .y-log * { user-select: text; }
         .y-log button, .y-log summary, .tool-diff-ln, .tool-diff-gutter { user-select: none; }
         .y-log-inner { max-width: 780px; margin: 0 auto; display: flex; flex-direction: column; gap: 28px; }
