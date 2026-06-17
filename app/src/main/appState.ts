@@ -350,6 +350,14 @@ export function registerAppStateBricks(): void {
     try {
       const info = await stat(resolved.path)
       if (!info.isFile()) return { ok: false, error: 'Only files can be opened.' }
+      if (info.size > 20 * 1024 * 1024) return { ok: false, error: 'This file is too large to open here.' }
+      const ext = resolved.path.split('.').pop()?.toLowerCase() ?? ''
+      const imageExts = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'ico']
+      if (imageExts.includes(ext)) {
+        const buf = await readFile(resolved.path)
+        const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'gif' ? 'image/gif' : ext === 'webp' ? 'image/webp' : ext === 'ico' ? 'image/x-icon' : 'image/png'
+        return { ok: true, content: `data:${mime};base64,${buf.toString('base64')}` }
+      }
       if (info.size > 4 * 1024 * 1024) return { ok: false, error: 'This file is too large to edit here.' }
       return { ok: true, content: await readFile(resolved.path, 'utf-8') }
     } catch (err) {

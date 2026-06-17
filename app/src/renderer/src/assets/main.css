@@ -48,10 +48,7 @@ code {
   flex: 1;
   min-height: 0;
   display: flex;
-}
-
-.kernel-body.has-modify .userland-slot {
-  border-right: none;
+  position: relative;
 }
 
 /* ---------- Userland: the moddable slot (the main area) ---------- */
@@ -359,10 +356,19 @@ code {
   width: 420px;
   min-height: 0;
   display: flex;
+  overflow: hidden;
   border-left: 1px solid rgba(200, 140, 70, 0.18);
   background: linear-gradient(180deg, #12100e 0%, #0e0d0b 100%);
   position: relative;
   z-index: 25;
+  transition: width 0.26s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.26s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.modify-rail:not(.is-open) {
+  width: 0;
+  border-left-color: transparent;
+}
+@media (prefers-reduced-motion: reduce) {
+  .modify-rail { transition: none; }
 }
 
 .modify {
@@ -1363,11 +1369,12 @@ code {
 .hljs-selector-tag,
 .hljs-tag,
 .hljs-deletion { color: #ff5370; }
-/* BLUE — function names, built-ins, attributes */
+/* PURPLE — function names */
 .hljs-title,
 .hljs-title.class_,
 .hljs-title.function_,
-.hljs-section { color: #82aaff; }
+.hljs-section { color: #c792ea; }
+/* BLUE — built-ins, attributes */
 .hljs-built_in,
 .hljs-builtin-name,
 .hljs-attr,
@@ -1376,7 +1383,7 @@ code {
 .hljs-selector-pseudo,
 .hljs-attribute,
 .hljs-meta,
-.hljs-link { color: #c792ea; }
+.hljs-link { color: #82aaff; }
 /* GREEN — strings */
 .hljs-string,
 .hljs-doctag,

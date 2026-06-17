@@ -18,16 +18,14 @@ function Shell(): React.JSX.Element {
 
   return (
     <div className="kernel-shell">
-      <div className={'kernel-body' + (modifyOpen ? ' has-modify' : '')}>
+      <div className="kernel-body">
         <main className="userland-slot">
           <UserlandHost />
         </main>
 
-        {modifyOpen ? (
-          <aside className="modify-rail">
-            <ModifyChat onClose={() => window.y.modify.close()} />
-          </aside>
-        ) : null}
+        <aside className={'modify-rail' + (modifyOpen ? ' is-open' : '')} aria-hidden={!modifyOpen}>
+          <ModifyChat onClose={() => window.y.modify.close()} />
+        </aside>
       </div>
     </div>
   )

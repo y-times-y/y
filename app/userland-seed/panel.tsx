@@ -316,7 +316,13 @@ function isMarkdownFile(file?: SelectedFile | null): boolean {
 function isCodeFile(file?: SelectedFile | null): boolean {
   if (!file) return false
   const ext = fileExt(file.name)
-  return !['md', 'mdx', 'markdown', 'txt', 'text', 'csv', 'tsv', ''].includes(ext)
+  return !['md', 'mdx', 'markdown', 'txt', 'text', 'csv', 'tsv', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico', ''].includes(ext)
+}
+
+function isImageFile(file?: SelectedFile | null): boolean {
+  if (!file) return false
+  const ext = fileExt(file.name)
+  return ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico'].includes(ext)
 }
 
 function codeFileLang(name: string): string {
@@ -660,62 +666,98 @@ function inlineMd(text: string) {
   return s
 }
 
-function TextBlock({ text }: { text: string }) {
-  const paragraphs = text.replace(/\r\n/g, '\n').split(/\n{2,}/)
+function TableBlock({ lines }: { lines: string[] }) {
+  const rows = lines
+    .filter(function (l) { return !/^\s*\|[\s\-:|]+\|\s*$/.test(l) })
+    .map(function (l) { return l.trim().replace(/^\||\|$/g, '').split('|').map(function (c) { return c.trim() }) })
+  if (!rows.length) return null
+  const header = rows[0]
+  const body = rows.slice(1)
   return (
-    <>
-      {paragraphs.map(function (para, i) {
-        const trimmed = para.trim()
-        if (!trimmed) return null
-        const h = trimmed.match(/^(#{1,3})\s+(.+)$/)
-        if (h) {
-          const level = h[1].length
-          const cls = level === 1 ? 'md-h1' : level === 2 ? 'md-h2' : 'md-h3'
-          return (
-            <div key={i} className={cls} dangerouslySetInnerHTML={{ __html: inlineMd(h[2]) }} />
-          )
-        }
-        if (/^>\s/.test(trimmed)) {
-          const quote = trimmed.split('\n').map(function (l) { return l.replace(/^>\s?/, '') }).join('\n')
-          return (
-            <blockquote key={i} className="md-quote" dangerouslySetInnerHTML={{ __html: inlineMd(quote) }} />
-          )
-        }
-        const lines = para.split('\n')
-        const isList = lines.every(function (l) { return /^[-*]\s+/.test(l.trim()) || l.trim() === '' })
-        if (isList && lines.some(function (l) { return l.trim() })) {
-          return (
-            <ul key={i} className="md-list">
-              {lines.filter(function (l) { return l.trim() }).map(function (l, j) {
-                return (
-                  <li key={j} dangerouslySetInnerHTML={{ __html: inlineMd(l.replace(/^[-*]\s+/, '')) }} />
-                )
-              })}
-            </ul>
-          )
-        }
-        const isOrdered = lines.every(function (l) { return /^\d+\.\s+/.test(l.trim()) || l.trim() === '' })
-        if (isOrdered && lines.some(function (l) { return l.trim() })) {
-          return (
-            <ol key={i} className="md-list md-olist">
-              {lines.filter(function (l) { return l.trim() }).map(function (l, j) {
-                return (
-                  <li key={j} dangerouslySetInnerHTML={{ __html: inlineMd(l.replace(/^\d+\.\s+/, '')) }} />
-                )
-              })}
-            </ol>
-          )
-        }
-        return (
-          <p
-            key={i}
-            className="md-p"
-            dangerouslySetInnerHTML={{ __html: lines.map(function (l) { return inlineMd(l) }).join('<br/>') }}
-          />
-        )
-      })}
-    </>
+    <div className="md-table-wrap">
+      <table className="md-table">
+        <thead><tr>{header.map(function (c, j) { return <th key={j} dangerouslySetInnerHTML={{ __html: inlineMd(c) }} /> })}</tr></thead>
+        <tbody>{body.map(function (row, i) { return <tr key={i}>{row.map(function (c, j) { return <td key={j} dangerouslySetInnerHTML={{ __html: inlineMd(c) }} /> })}</tr> })}</tbody>
+      </table>
+    </div>
   )
+}
+
+function TextBlock({ text }: { text: string }) {
+  const lines = text.replace(/\r\n/g, '\n').split('\n')
+  const elements: React.ReactElement[] = []
+  let i = 0
+  while (i < lines.length) {
+    const line = lines[i]
+    const trimmed = line.trim()
+    if (!trimmed) { i++; continue }
+    // Heading
+    const h = trimmed.match(/^(#{1,3})\s+(.+)$/)
+    if (h) {
+      const level = h[1].length
+      const cls = level === 1 ? 'md-h1' : level === 2 ? 'md-h2' : 'md-h3'
+      elements.push(<div key={i} className={cls} dangerouslySetInnerHTML={{ __html: inlineMd(h[2]) }} />)
+      i++; continue
+    }
+    // Horizontal rule
+    if (/^[-*_]{3,}\s*$/.test(trimmed)) {
+      elements.push(<hr key={i} className="md-hr" />)
+      i++; continue
+    }
+    // Blockquote
+    if (trimmed.startsWith('> ')) {
+      const quoteLines: string[] = []
+      while (i < lines.length && lines[i].trim().startsWith('>')) {
+        quoteLines.push(lines[i].trim().replace(/^>\s?/, ''))
+        i++
+      }
+      elements.push(<blockquote key={`q${i}`} className="md-quote" dangerouslySetInnerHTML={{ __html: inlineMd(quoteLines.join('\n')) }} />)
+      continue
+    }
+    // Table
+    if (trimmed.startsWith('|')) {
+      const tableLines: string[] = []
+      while (i < lines.length && lines[i].trim().startsWith('|')) {
+        tableLines.push(lines[i])
+        i++
+      }
+      elements.push(<TableBlock key={`t${i}`} lines={tableLines} />)
+      continue
+    }
+    // Unordered list
+    if (/^[-*]\s+/.test(trimmed)) {
+      const items: string[] = []
+      while (i < lines.length && /^[-*]\s+/.test(lines[i].trim())) {
+        items.push(lines[i].trim().replace(/^[-*]\s+/, ''))
+        i++
+      }
+      elements.push(<ul key={`ul${i}`} className="md-list">{items.map(function (item, j) { return <li key={j} dangerouslySetInnerHTML={{ __html: inlineMd(item) }} /> })}</ul>)
+      continue
+    }
+    // Ordered list
+    if (/^\d+\.\s+/.test(trimmed)) {
+      const items: string[] = []
+      while (i < lines.length && /^\d+\.\s+/.test(lines[i].trim())) {
+        items.push(lines[i].trim().replace(/^\d+\.\s+/, ''))
+        i++
+      }
+      elements.push(<ol key={`ol${i}`} className="md-list md-olist">{items.map(function (item, j) { return <li key={j} dangerouslySetInnerHTML={{ __html: inlineMd(item) }} /> })}</ol>)
+      continue
+    }
+    // Paragraph: collect until a structural element or blank line
+    const paraLines: string[] = []
+    while (i < lines.length) {
+      const l = lines[i].trim()
+      if (!l) { i++; break }
+      if (/^#{1,3}\s/.test(l) || /^[-*_]{3,}\s*$/.test(l) || l.startsWith('|') || /^[-*]\s+/.test(l) || /^\d+\.\s+/.test(l) || l.startsWith('> ')) break
+      paraLines.push(lines[i])
+      i++
+    }
+    if (paraLines.length) {
+      elements.push(<p key={`p${i}`} className="md-p" dangerouslySetInnerHTML={{ __html: paraLines.map(function (l) { return inlineMd(l) }).join('<br/>') }} />)
+    }
+  }
+  return <>{elements}</>
 }
 
 function CodeBlock({ lang, code }: { lang: string; code: string }) {
@@ -2630,26 +2672,33 @@ export default function Chat() {
           color: rgba(240, 190, 120, 0.95);
         }
         .y-file-rail {
-          width: 326px; min-width: 326px; max-width: 34vw;
+          flex-shrink: 0;
+          width: 326px;
           border-left: 1px solid rgba(255,255,255,0.07);
-          background: var(--y-sidebar);
+          background: rgba(255,255,255,0.035);
           display: flex; flex-direction: column; min-height: 0;
+          overflow: hidden;
+          transition: width 0.26s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.26s cubic-bezier(0.4, 0, 0.2, 1);
         }
+        .y-file-rail:not(.is-open) { width: 0; border-left-color: transparent; }
+        @media (prefers-reduced-motion: reduce) { .y-file-rail { transition: none; } }
         .y-file-rail-head {
           height: 44px; flex-shrink: 0; display: flex; align-items: center; justify-content: space-between;
           padding: 0 12px 0 14px; border-bottom: 1px solid rgba(255,255,255,0.06);
+          background: rgba(255,255,255,0.065);
         }
         .y-file-rail-title { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; }
         .y-file-rail-list { flex: 1; min-height: 0; overflow: auto; padding: 10px 8px; }
         .y-file-row {
           display: flex; align-items: center; gap: 9px; width: 100%; min-height: 34px;
-          border: none; border-radius: 8px; background: transparent; color: var(--y-text-2);
+          border: none; border-radius: 8px; background: transparent; color: #ffffff;
+          -webkit-font-smoothing: antialiased;
           font: inherit; text-align: left; cursor: pointer; outline: none;
         }
         .y-file-row:hover { background: rgba(255,255,255,0.05); color: var(--y-text); }
         .y-file-row.active { background: rgba(255,255,255,0.075); color: var(--y-text); }
         .y-file-row-main { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-        .y-file-row-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--y-mono); font-size: 12.5px; }
+        .y-file-row-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; }
         .y-file-row-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--y-text-3); font-size: 11px; }
         .y-file-folder { color: var(--y-text-2); }
         .y-file-folder-chevron { margin-left: auto; color: var(--y-text-3); display: flex; align-items: center; transition: transform 0.15s ease; }
@@ -2726,6 +2775,11 @@ export default function Chat() {
           color: transparent; caret-color: #e4e4e4; background: transparent;
           border: none; outline: none; resize: none; overflow: hidden;
         }
+        .y-file-image {
+          flex: 1; min-height: 0; overflow: auto; display: flex; align-items: center; justify-content: center;
+          padding: 24px;
+        }
+        .y-file-img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 6px; }
         .y-file-markdown {
           flex: 1; min-height: 0; overflow: auto;
           scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.12) transparent;
@@ -2737,14 +2791,25 @@ export default function Chat() {
         .y-file-markdown > .md-body {
           max-width: 860px; margin: 0 auto; padding: 30px 34px 70px;
         }
-        .y-file-markdown .md-body { font-size: 15px; line-height: 1.72; gap: 16px; }
-        .y-file-markdown .md-h1 { font-size: 28px; line-height: 1.18; margin-top: 4px; }
-        .y-file-markdown .md-h2 { font-size: 22px; line-height: 1.25; margin-top: 10px; }
-        .y-file-markdown .md-h3 { font-size: 17px; line-height: 1.35; margin-top: 6px; }
-        .y-file-markdown .md-list { padding-left: 24px; }
-        .y-file-markdown .md-p { color: rgba(255,255,255,0.84); }
+        .y-file-markdown .md-body { font-size: 15px; line-height: 1.78; gap: 20px; }
+        .y-file-markdown .md-h1 { font-size: 28px; line-height: 1.18; margin-top: 40px; margin-bottom: 10px; }
+        .y-file-markdown .md-h2 { font-size: 22px; line-height: 1.25; margin-top: 32px; margin-bottom: 8px; }
+        .y-file-markdown .md-h3 { font-size: 17px; line-height: 1.35; margin-top: 24px; margin-bottom: 5px; }
+        .y-file-markdown .md-h1:first-child, .y-file-markdown .md-h2:first-child, .y-file-markdown .md-h3:first-child { margin-top: 4px; }
+        .y-file-markdown .md-p { color: rgba(255,255,255,0.84); line-height: 1.82; margin: 3px 0; }
+        .y-file-markdown .md-list { padding-left: 28px; margin: 2px 0; }
+        .y-file-markdown .md-list li { margin: 7px 0; line-height: 1.72; }
+        .y-file-markdown .md-quote { margin: 8px 0; padding: 14px 18px; }
+        .y-file-markdown .md-code { margin: 6px 0; }
+        .md-hr { border: none; border-top: 1px solid rgba(255,255,255,0.1); margin: 22px 0; }
+        .md-table-wrap { overflow-x: auto; }
+        .md-table { border-collapse: collapse; width: 100%; font-size: 13.5px; line-height: 1.5; }
+        .md-table th, .md-table td { padding: 7px 14px; border: 1px solid rgba(255,255,255,0.08); text-align: left; vertical-align: top; }
+        .md-table th { background: rgba(255,255,255,0.05); font-weight: 600; color: var(--y-text); }
+        .md-table td { color: rgba(255,255,255,0.78); }
+        .md-table tr:hover td { background: rgba(255,255,255,0.025); }
         @media (max-width: 980px) {
-          .y-file-rail { width: 286px; min-width: 286px; max-width: 42vw; }
+          .y-file-rail { width: 286px; }
         }
         .y-empty {
           flex: 1; display: flex; align-items: center; justify-content: center; padding: 32px;
@@ -3205,25 +3270,26 @@ export default function Chat() {
               {title}
             </span>
             <div className="y-header-actions">
-              <button
-                type="button"
-                className={'y-icon-btn' + (fileRailOpen ? ' active' : '')}
-                data-testid="file-rail-button"
-                aria-label={fileRailOpen ? 'Close files' : 'Open files'}
-                title={fileRailOpen ? 'Close files' : 'Open files'}
-                onClick={() => {
-                  const next = !fileRailOpen
-                  setFileRailOpen(next)
-                  if (next && modifyOpen && !PREVIEW) window.y.modify.close()
-                }}
-                disabled={!activeProjectId}
-              >
-                <Icon name="files" size={15} />
-              </button>
-              {!PREVIEW && window.y.modify ? (
+              {!fileRailOpen && (
                 <button
                   type="button"
-                  className={'y-modify-btn' + (modifyOpen ? ' active' : '')}
+                  className="y-icon-btn"
+                  data-testid="file-rail-button"
+                  aria-label="Open files"
+                  title="Open files"
+                  onClick={() => {
+                    setFileRailOpen(true)
+                    if (modifyOpen && !PREVIEW) window.y.modify.close()
+                  }}
+                  disabled={!activeProjectId}
+                >
+                  <Icon name="files" size={15} />
+                </button>
+              )}
+              {!PREVIEW && window.y.modify && !modifyOpen ? (
+                <button
+                  type="button"
+                  className="y-modify-btn"
                   data-testid="modify-button"
                   onClick={() => window.y.modify.toggle()}
                 >
@@ -3272,7 +3338,15 @@ export default function Chat() {
                 </button>
               </div>
               <div className="y-file-body">
-                {fileMode === 'preview' && isMarkdownFile(activeFile) ? (
+                {isImageFile(activeFile) ? (
+                  <div className="y-file-image">
+                    {fileContent ? (
+                      <img src={fileContent} alt={activeFile.name} className="y-file-img" />
+                    ) : (
+                      <span style={{ color: 'var(--y-text-3)', fontSize: 13 }}>{fileStatus || 'Loading...'}</span>
+                    )}
+                  </div>
+                ) : fileMode === 'preview' && isMarkdownFile(activeFile) ? (
                   <div className="y-file-markdown" data-testid="markdown-preview">
                     <AssistantBody text={fileContent} />
                   </div>
@@ -3671,8 +3745,7 @@ export default function Chat() {
           </div> : null}
         </div>
 
-        {fileRailOpen ? (
-          <aside className="y-file-rail" data-testid="file-rail">
+        <aside className={'y-file-rail' + (fileRailOpen ? ' is-open' : '')} data-testid="file-rail" aria-hidden={!fileRailOpen}>
             <div className="y-file-rail-head">
               <span className="y-file-rail-title">
                 <Icon name="files" size={15} />
@@ -3729,7 +3802,6 @@ export default function Chat() {
               )}
             </div>
           </aside>
-        ) : null}
       </div>
     </>
   )
