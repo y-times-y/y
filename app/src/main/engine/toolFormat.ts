@@ -1,5 +1,7 @@
 // Human-readable tool activity for the chat UI — verb + target, Codex-style.
 
+import { extractPartialJsonString } from './partialJson'
+
 export interface ToolPresentation {
   verb: string // display label: Read, Edit, Grep…
   target?: string // file path, pattern, or command snippet
@@ -49,29 +51,38 @@ function pickString(input: Record<string, unknown>, key: string): string | undef
   return typeof v === 'string' ? v : undefined
 }
 
-function diffPreview(oldS: string, newS: string): string {
+function diffPreview(oldS: string, newS: string, maxOutLines = 500): string {
   const oldLines = oldS.split('\n')
   const newLines = newS.split('\n')
   const out: string[] = []
   const max = Math.max(oldLines.length, newLines.length)
-  for (let i = 0; i < max && out.length < 24; i++) {
+  for (let i = 0; i < max && out.length < maxOutLines; i++) {
     const o = oldLines[i]
     const n = newLines[i]
     if (o === n) continue
-    if (o !== undefined) out.push('- ' + truncate(o, 120))
-    if (n !== undefined) out.push('+ ' + truncate(n, 120))
+    if (o !== undefined) out.push('- ' + o)
+    if (n !== undefined) out.push('+ ' + n)
   }
-  if (out.length === 0) return truncate(newS || oldS, 600)
+  if (out.length === 0) return newS || oldS
   return out.join('\n')
 }
 
 function partialFilePath(partialJson: string): string | undefined {
+  const fromPartial = extractPartialJsonString(partialJson, 'file_path')
+  if (fromPartial) return shortPath(fromPartial)
   const m = partialJson.match(/"file_path"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"/)
   if (!m?.[1]) return undefined
-  return decodeJsonString(m[1])
+  return shortPath(decodeJsonString(m[1]))
 }
 
 function partialEditBody(partialJson: string): string | undefined {
+  const oldS = extractPartialJsonString(partialJson, 'old_string') ?? ''
+  const newS = extractPartialJsonString(partialJson, 'new_string') ?? ''
+  if (!oldS && !newS) return partialEditBodyLegacy(partialJson)
+  return diffPreview(oldS, newS)
+}
+
+function partialEditBodyLegacy(partialJson: string): string | undefined {
   const oldM = partialJson.match(/"old_string"\s*:\s*"((?:[^"\\]|\\.)*)"/)
   const newM = partialJson.match(/"new_string"\s*:\s*"((?:[^"\\]|\\.)*)"/)
   if (!oldM && !newM) return undefined
@@ -79,6 +90,26 @@ function partialEditBody(partialJson: string): string | undefined {
   const newS = newM ? decodeJsonString(newM[1]) : ''
   if (!oldS && !newS) return undefined
   return diffPreview(oldS, newS)
+}
+
+function partialWriteBody(partialJson: string): string | undefined {
+  const content = extractPartialJsonString(partialJson, 'content')
+  if (!content) return partialWriteBodyLegacy(partialJson)
+  return content
+    .split('\n')
+    .map((l) => '+ ' + l)
+    .join('\n')
+}
+
+function partialWriteBodyLegacy(partialJson: string): string | undefined {
+  const m = partialJson.match(/"content"\s*:\s*"((?:[^"\\]|\\.)*)/)
+  if (!m?.[1]) return undefined
+  const legacy = decodeJsonString(m[1])
+  if (!legacy) return undefined
+  return legacy
+    .split('\n')
+    .map((l) => '+ ' + l)
+    .join('\n')
 }
 
 function present(name: string, input: Record<string, unknown>): ToolPresentation {
@@ -105,7 +136,12 @@ function present(name: string, input: Record<string, unknown>): ToolPresentation
       return {
         verb,
         target: fp ? shortPath(fp) : undefined,
-        body: content ? truncate(content, 800) : undefined
+        body: content
+          ? content
+              .split('\n')
+              .map((l) => '+ ' + l)
+              .join('\n')
+          : undefined
       }
     }
     case 'Grep': {
@@ -148,7 +184,9 @@ export function formatToolStream(name: string, partialJson: string): ToolPresent
 
   const verb = toolVerb(name)
   const fp = partialFilePath(partialJson)
-  const body = name === 'Edit' ? partialEditBody(partialJson) : undefined
+  let body: string | undefined
+  if (name === 'Edit') body = partialEditBody(partialJson)
+  else if (name === 'Write') body = partialWriteBody(partialJson)
 
   if (fp) return { verb, target: shortPath(fp), body }
 

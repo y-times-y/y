@@ -1,4 +1,5 @@
 import * as React from 'react'
+import hljs from 'highlight.js/lib/common'
 
 type Block =
   | { kind: 'code'; lang: string; value: string }
@@ -9,8 +10,8 @@ function normalizeLang(lang: string): string {
   if (l === 'typescript' || l === 'tsx') return 'typescript'
   if (l === 'javascript' || l === 'jsx' || l === 'js') return 'javascript'
   if (l === 'py') return 'python'
-  if (l === 'sh' || l === 'shell' || l === 'zsh' || l === 'bash') return 'shell'
-  if (l === 'json' || l === 'yaml' || l === 'yml') return l
+  if (l === 'sh' || l === 'shell' || l === 'zsh' || l === 'bash') return 'bash'
+  if (l === 'scss' || l === 'sass') return 'scss'
   return l
 }
 
@@ -48,53 +49,18 @@ function esc(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
-export function highlightLine(line: string, lang: string): string {
-  const safe = esc(line)
-  if (!lang) return safe
-
-  const slots: string[] = []
-  const mark = (html: string): string => {
-    const i = slots.length
-    slots.push(html)
-    return `@@HL${i}@@`
-  }
-  const fill = (s: string): string =>
-    s.replace(/@@HL(\d+)@@/g, (_, n) => slots[Number(n)] ?? '')
-
-  if (lang === 'json') {
-    let out = safe
-    out = out.replace(/"([^"\\]|\\.)*"/g, (m) => mark(`<span class="md-str">${m}</span>`))
-    out = out.replace(/\b(true|false|null)\b/g, (m) => mark(`<span class="md-kw">${m}</span>`))
-    out = out.replace(/\b(-?\d+\.?\d*)\b/g, (m) => mark(`<span class="md-num">${m}</span>`))
-    return fill(out)
-  }
-
-  if (lang === 'shell') {
-    if (line.trimStart().startsWith('#')) return `<span class="md-com">${safe}</span>`
-    let out = safe
-    out = out.replace(/('([^'\\]|\\.)*'|"([^"\\]|\\.)*")/g, (m) => mark(`<span class="md-str">${m}</span>`))
-    out = out.replace(/^(\$\s?)/, (m) => mark(`<span class="md-kw">${m}</span>`))
-    return fill(out)
-  }
-
-  const keywords =
-    lang === 'python'
-      ? /\b(async|await|def|class|return|import|from|if|else|elif|for|while|try|except|with|as|None|True|False|in|not|and|or|pass|raise|yield|lambda)\b/g
-      : /\b(async|await|function|const|let|var|return|import|from|export|default|class|if|else|for|while|try|catch|new|typeof|interface|type|null|undefined|true|false|extends|implements|enum|switch|case|break|continue|void|this)\b/g
-
-  let out = safe
-  // Slot strings/comments before keywords — otherwise the string regex matches
-  // attribute quotes inside already-inserted <span class="md-kw"> tags.
-  out = out.replace(/('([^'\\]|\\.)*'|"([^"\\]|\\.)*"|`([^`\\]|\\.)*`)/g, (m) => mark(`<span class="md-str">${m}</span>`))
-  out = out.replace(/(\/\/.*|#.*)$/g, (m) => mark(`<span class="md-com">${m}</span>`))
-  out = out.replace(keywords, (m) => mark(`<span class="md-kw">${m}</span>`))
-  out = out.replace(/\b(\d+\.?\d*)\b/g, (m) => mark(`<span class="md-num">${m}</span>`))
-  return fill(out)
+function highlightCode(code: string, lang: string): string {
+  const l = normalizeLang(lang)
+  try {
+    if (l && hljs.getLanguage(l)) {
+      return hljs.highlight(code, { language: l, ignoreIllegals: true }).value
+    }
+  } catch {}
+  return esc(code)
 }
 
-function highlightCode(code: string, lang: string): string {
-  const normalized = normalizeLang(lang)
-  return code.split('\n').map((line) => highlightLine(line, normalized)).join('\n')
+export function highlightLine(line: string, lang: string): string {
+  return highlightCode(line, lang)
 }
 
 function inlineMarkdown(text: string): string {

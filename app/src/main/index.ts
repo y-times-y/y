@@ -1,11 +1,14 @@
 import { app, shell, BrowserWindow, ipcMain } from 'electron'
 import { join } from 'path'
-import { mkdir, readFile, writeFile } from 'fs/promises'
+import { mkdir, readFile, writeFile, stat } from 'fs/promises'
 import { watch } from 'node:fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
-import { startSession, sendToSession, cancelSession, listEngines } from './engine'
+import { startSession, sendToSession, commandSession, cancelSession, listEngines, listModels } from './engine'
+import type { EngineRunOptions } from './engine/types'
 import { ensureWorkspace, registerCapabilityBricks } from './capabilities'
+import { registerAppStateBricks } from './appState'
+import { killAllTerminals, registerTerminalBricks } from './terminal'
 import {
   ensureRepo,
   snapshot as ulSnapshot,
@@ -73,11 +76,20 @@ function userlandFile(): string {
 // touch the user's global git config, and always run with cwd = userlandDir.
 async function ensureUserland(): Promise<void> {
   await mkdir(userlandDir(), { recursive: true })
+  const seed = await readUserlandSeed()
+  let needsWrite = false
   try {
     await readFile(userlandFile())
+    // Dev: pull kernel seed updates into the live Userland file when seed is newer.
+    if (is.dev) {
+      const [seedStat, liveStat] = await Promise.all([stat(userlandSeedFile()), stat(userlandFile())])
+      if (seedStat.mtimeMs > liveStat.mtimeMs) needsWrite = true
+    }
   } catch {
-    // File doesn't exist yet → seed from userland-seed/panel.tsx.
-    await writeFile(userlandFile(), await readUserlandSeed(), 'utf-8')
+    needsWrite = true
+  }
+  if (needsWrite) {
+    await writeFile(userlandFile(), seed, 'utf-8')
   }
   // Snapshots are a safety NET, not a hard requirement. If git is missing on the
   // user's machine, the app must still launch and self-modify — it just loses
@@ -194,18 +206,47 @@ app.whenReady().then(async () => {
   // start returns a session id; send/cancel act on it; the actual reply streams
   // back as 'engine:event' pushes (see engine/index.ts → broadcast).
   ipcMain.handle('engine:list', () => listEngines())
-  // Normal chat: always read-only — it can never modify the app, no matter what
-  // the (Userland) caller asks. The rule from §5 enforced at the brick layer.
-  ipcMain.handle('engine:start', (_e, args) => startSession({ ...args, mode: 'read' }))
+  ipcMain.handle('engine:models', () => listModels())
+  // Normal chat is the user's real coding agent. It gets broad write access, like
+  // the official CLI would in a trusted local terminal session.
+  ipcMain.handle('engine:start', (_e, args: { engine: string; model?: string; options?: EngineRunOptions }) =>
+    startSession({
+      ...args,
+      options: {
+        ...args.options,
+        claudeDangerouslySkipPermissions: true,
+        codexDangerouslyBypassApprovalsAndSandbox: true
+      },
+      cwd: args.options?.workingDirectory?.trim(),
+      mode: 'write'
+    })
+  )
   // Modify chat (Kernel-only): write access, pinned to the Userland dir so the
   // agent's edits are scoped there and can never reach y's own source.
-  ipcMain.handle('engine:startModify', (_e, args: { engine: string; model?: string }) =>
-    startSession({ engine: args.engine, model: args.model, cwd: userlandDir(), mode: 'write' })
+  ipcMain.handle(
+    'engine:startModify',
+    (_e, args: { engine: string; model?: string; options?: EngineRunOptions }) =>
+      startSession({
+        engine: args.engine,
+        model: args.model,
+        options: args.options,
+        cwd: userlandDir(),
+        mode: 'write'
+      })
   )
   ipcMain.handle('engine:send', (_e, sessionId: string, prompt: string) =>
     sendToSession(sessionId, prompt)
   )
+  ipcMain.handle('engine:command', (_e, sessionId: string, command) =>
+    commandSession(sessionId, command)
+  )
   ipcMain.handle('engine:cancel', (_e, sessionId: string) => cancelSession(sessionId))
+
+  // ---- Real app state: project folders + persisted per-project chats.
+  registerAppStateBricks()
+
+  // ---- PTY terminal brick: real interactive shell sessions rendered by Userland.
+  registerTerminalBricks()
 
   // ---- Capability bricks (Phase 6): network + scoped filesystem, consent-gated.
   registerCapabilityBricks()
@@ -237,6 +278,7 @@ app.whenReady().then(async () => {
 // for applications and their menu bar to stay active until the user quits
 // explicitly with Cmd + Q.
 app.on('window-all-closed', () => {
+  killAllTerminals()
   if (process.platform !== 'darwin') {
     app.quit()
   }

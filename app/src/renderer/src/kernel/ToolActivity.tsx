@@ -1,18 +1,45 @@
 import * as React from 'react'
 import { highlightLine } from './markdown'
 
+export function diffStat(body?: string): { added: number; removed: number } | null {
+  if (!body) return null
+  let added = 0
+  let removed = 0
+  for (const line of body.split('\n')) {
+    if (line.startsWith('+ ')) added += 1
+    else if (line.startsWith('- ')) removed += 1
+  }
+  return added || removed ? { added, removed } : null
+}
+
 function ToolDiffBody({ body, lang }: { body: string; lang: string }): React.JSX.Element {
+  let lineNo = 1
+  const lines = body
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => {
+      const del = line.startsWith('- ')
+      const add = line.startsWith('+ ')
+      return { line, del, add, raw: del || add || line.startsWith('  ') ? line.slice(2) : line }
+    })
+  const commonIndent = lines.reduce<number | null>((min, item) => {
+    if (!item.raw.trim()) return min
+    const indent = item.raw.match(/^ */)?.[0].length ?? 0
+    return min === null ? indent : Math.min(min, indent)
+  }, null) ?? 0
   return (
     <div className="tool-activity-detail">
-      {body.split('\n').map((line, i) => {
-        if (!line) return null
-        const del = line.startsWith('- ')
-        const add = line.startsWith('+ ')
-        const raw = del || add ? line.slice(2) : line
+      {lines.map(({ del, add, raw }, i) => {
+        const text = commonIndent > 0 ? raw.slice(commonIndent) : raw
         const cls = del ? ' tool-diff-del' : add ? ' tool-diff-add' : ''
+        const mark = del ? '-' : add ? '+' : ' '
+        const currentLine = lineNo
+        if (!del) lineNo += 1
         return (
           <div key={i} className={'tool-diff-line' + cls}>
-            <code dangerouslySetInnerHTML={{ __html: highlightLine(raw, lang) }} />
+            <span className="tool-diff-ln">{currentLine}</span>
+            <span className="tool-diff-gutter">{mark}</span>
+            <code dangerouslySetInnerHTML={{ __html: highlightLine(text, lang) }} />
           </div>
         )
       })}
@@ -33,20 +60,31 @@ export function ToolActivity({
   live?: boolean
   lang?: string
 }): React.JSX.Element {
-  const showDiff = !!body && (body.includes('\n- ') || body.startsWith('- ') || body.includes('\n+ '))
+  const showDiff = !live && !!body && (body.includes('\n- ') || body.startsWith('- ') || body.includes('\n+ '))
+  const stat = diffStat(body)
+  const activityLine = (
+    <div className="tool-activity-line">
+      <span className={'tool-activity-verb' + (live ? ' is-live' : '')}>{verb}</span>
+      {target ? <span className="tool-activity-target">{target}</span> : null}
+      {stat ? (
+        <span className="tool-activity-stat">
+          <span className="tool-stat-add">+{stat.added}</span>
+          <span className="tool-stat-del">-{stat.removed}</span>
+        </span>
+      ) : null}
+    </div>
+  )
+  if (showDiff) {
+    return (
+      <details className="tool-activity is-collapsible">
+        <summary>{activityLine}</summary>
+        <ToolDiffBody body={body} lang={lang} />
+      </details>
+    )
+  }
   return (
     <div className="tool-activity">
-      <div className="tool-activity-line">
-        <span className={'tool-activity-verb' + (live ? ' is-live' : '')}>{verb}</span>
-        {target ? <span className="tool-activity-target">{target}</span> : null}
-      </div>
-      {body ? (
-        showDiff ? (
-          <ToolDiffBody body={body} lang={lang} />
-        ) : (
-          <pre className="tool-activity-detail">{body}</pre>
-        )
-      ) : null}
+      {activityLine}
     </div>
   )
 }

@@ -27,6 +27,14 @@ export function ModifySendIcon({ size = 16 }: { size?: number }): React.JSX.Elem
   )
 }
 
+export function ModifyStopIcon({ size = 16 }: { size?: number }): React.JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 20 20" fill="none" aria-hidden>
+      <rect x="6" y="6" width="8" height="8" rx="1.2" fill="currentColor" />
+    </svg>
+  )
+}
+
 export function ModifyToolIcon({ size = 14 }: { size?: number }): React.JSX.Element {
   return (
     <svg width={size} height={size} viewBox="0 0 20 20" fill="none" aria-hidden>

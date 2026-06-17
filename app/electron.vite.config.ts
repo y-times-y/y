@@ -11,8 +11,10 @@ export default defineConfig({
         //  - isomorphic-git: CJS with dynamic require()s (safe-buffer/sha.js) that
         //    don't survive bundling; diff rides along with it.
         external: ['esbuild', 'isomorphic-git', 'diff']
-      }
-    }
+      },
+      copyPublicDir: false
+    },
+    publicDir: resolve('src/main/assets')
   },
   preload: {},
   renderer: {
@@ -21,6 +23,9 @@ export default defineConfig({
         '@renderer': resolve('src/renderer/src'),
         '@userland-seed': resolve('userland-seed')
       }
+    },
+    optimizeDeps: {
+      include: ['@xterm/xterm', '@xterm/addon-fit']
     },
     plugins: [react()]
   }

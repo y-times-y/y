@@ -1,6 +1,8 @@
 import * as React from 'react'
 import * as ReactJsxRuntime from 'react/jsx-runtime'
 import { publishVerdict } from './userlandStatus'
+import XtermTerminal from './XtermTerminal'
+import hljs from 'highlight.js/lib/common'
 
 // Turn compiled CommonJS code into a live React component.
 function buildComponent(code: string): React.ComponentType {
@@ -10,6 +12,8 @@ function buildComponent(code: string): React.ComponentType {
   const requireShim = (name: string): unknown => {
     if (name === 'react') return React
     if (name === 'react/jsx-runtime' || name === 'react/jsx-dev-runtime') return ReactJsxRuntime
+    if (name === '@renderer/kernel/XtermTerminal') return XtermTerminal
+    if (name === 'highlight.js/lib/common') return hljs
     throw new Error(`Userland imported "${name}", which y doesn't expose yet`)
   }
   // eslint-disable-next-line no-new-func, @typescript-eslint/no-implied-eval
