@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import XtermTerminal from '@renderer/kernel/XtermTerminal'
 import hljs from 'highlight.js/lib/common'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import rehypeRaw from 'rehype-raw'
 
 // Default chat UI — lives in USERLAND (fully moddable). Uses window.y.engine bricks.
 const LABELS: Record<string, string> = { 'claude-code': 'Claude Code', codex: 'Codex' }
@@ -62,38 +65,21 @@ type FileTreeNode =
   | { kind: 'file'; file: SelectedFile; name: string; depth: number }
   | { kind: 'folder'; folderPath: string; name: string; depth: number }
 
-function buildVisibleTree(files: SelectedFile[], expanded: Set<string>): FileTreeNode[] {
+function buildVisibleTree(
+  directories: Record<string, ProjectDirectoryEntry[]>,
+  expanded: Set<string>
+): FileTreeNode[] {
   const nodes: FileTreeNode[] = []
-  const allFolderPaths = new Set<string>()
-  for (const file of files) {
-    const rel = (file.relPath || file.name).replace(/\\/g, '/')
-    const parts = rel.split('/')
-    for (let i = 1; i < parts.length; i++) {
-      allFolderPaths.add(parts.slice(0, i).join('/'))
-    }
-  }
   function addLevel(parentPath: string, depth: number): void {
-    const childFolders = [...allFolderPaths]
-      .filter(fp => {
-        if (parentPath === '') return fp.split('/').length === 1
-        return fp.startsWith(parentPath + '/') && fp.split('/').length === parentPath.split('/').length + 1
-      })
-      .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
-    const childFiles = files
-      .filter(file => {
-        const rel = (file.relPath || file.name).replace(/\\/g, '/')
-        const parts = rel.split('/')
-        if (parentPath === '') return parts.length === 1
-        return parts.slice(0, -1).join('/') === parentPath
-      })
-      .sort((a, b) => (a.relPath || a.name).split('/').pop()!.localeCompare((b.relPath || b.name).split('/').pop()!, undefined, { sensitivity: 'base' }))
-    for (const fp of childFolders) {
-      nodes.push({ kind: 'folder', folderPath: fp, name: fp.split('/').pop()!, depth })
-      if (expanded.has(fp)) addLevel(fp, depth + 1)
-    }
-    for (const file of childFiles) {
-      const rel = (file.relPath || file.name).replace(/\\/g, '/')
-      nodes.push({ kind: 'file', file, name: rel.split('/').pop() || file.name, depth })
+    const entries = directories[parentPath] ?? []
+    for (const entry of entries) {
+      const relPath = (entry.relPath || entry.name).replace(/\\/g, '/')
+      if (entry.kind === 'directory') {
+        nodes.push({ kind: 'folder', folderPath: relPath, name: entry.name, depth })
+        if (expanded.has(relPath)) addLevel(relPath, depth + 1)
+      } else {
+        nodes.push({ kind: 'file', file: entry, name: entry.name, depth })
+      }
     }
   }
   addLevel('', 0)
@@ -704,6 +690,16 @@ function TextBlock({ text }: { text: string }) {
       elements.push(<hr key={i} className="md-hr" />)
       i++; continue
     }
+    // Raw HTML block
+    if (trimmed.startsWith('<')) {
+      const htmlLines: string[] = []
+      while (i < lines.length && lines[i].trim()) {
+        htmlLines.push(lines[i])
+        i++
+      }
+      elements.push(<div key={`html${i}`} className="md-html" dangerouslySetInnerHTML={{ __html: htmlLines.join('\n') }} />)
+      continue
+    }
     // Blockquote
     if (trimmed.startsWith('> ')) {
       const quoteLines: string[] = []
@@ -898,7 +894,14 @@ function Icon({ name, size = 16 }: { name: string; size?: number }) {
   if (name === 'undo')
     return (
       <svg style={s} viewBox="0 0 20 20" fill="none" aria-hidden>
-        <path d="M7 7H4V4M4.5 7A6.5 6.5 0 1110 17" stroke="currentColor" strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M8 5L4 9l4 4M4.5 9H12a4 4 0 014 4v2" stroke="currentColor" strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    )
+  if (name === 'copy')
+    return (
+      <svg style={s} viewBox="0 0 20 20" fill="none" aria-hidden>
+        <rect x="6.5" y="6.5" width="9" height="9" rx="1.5" stroke="currentColor" strokeWidth={sw} />
+        <path d="M13.5 6.5V5A1.5 1.5 0 0012 3.5H5A1.5 1.5 0 003.5 5v7A1.5 1.5 0 005 13.5h1.5" stroke="currentColor" strokeWidth={sw} />
       </svg>
     )
   if (name === 'chevron')
@@ -1038,7 +1041,9 @@ export default function Chat() {
   const [messages, setMessages] = useState<Msg[]>([])
   const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState<SelectedFile[]>([])
-  const [projectFiles, setProjectFiles] = useState<SelectedFile[]>([])
+  const [projectDirectories, setProjectDirectories] = useState<Record<string, ProjectDirectoryEntry[]>>({})
+  const [loadingFolders, setLoadingFolders] = useState<Set<string>>(new Set())
+  const [fileSearchResults, setFileSearchResults] = useState<SelectedFile[]>([])
   const [fileRailOpen, setFileRailOpen] = useState(false)
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set())
   const [activeFile, setActiveFile] = useState<SelectedFile | null>(null)
@@ -1060,6 +1065,9 @@ export default function Chat() {
   const sidRef = useRef<string | null>(PREVIEW ? 'preview' : null)
   const activeRef = useRef<{ projectId?: string; chatId?: string; path?: string }>({})
   const projectsRef = useRef<Project[]>([])
+  const projectDirectoriesRef = useRef<Record<string, ProjectDirectoryEntry[]>>({})
+  const loadingFoldersRef = useRef<Set<string>>(new Set())
+  const pendingFolderRefreshRef = useRef<Set<string>>(new Set())
   const messagesRef = useRef<Msg[]>([])
   const queuedFollowUpsRef = useRef<Record<string, string>>({})
   const seenToolEventsRef = useRef<Record<string, true>>({})
@@ -1084,9 +1092,24 @@ export default function Chat() {
   const fileSuggestions =
     mentionQuery === null
       ? []
-      : projectFiles
-          .filter((file) => (file.relPath || file.name).toLowerCase().includes(mentionQuery))
-          .slice(0, 40)
+      : fileSearchResults
+
+  useEffect(() => {
+    if (mentionQuery === null || !activeProjectId) {
+      setFileSearchResults([])
+      return
+    }
+    let disposed = false
+    const timer = setTimeout(() => {
+      void window.y.app.searchFiles(activeProjectId, mentionQuery).then(function (res) {
+        if (!disposed && res.ok) setFileSearchResults(res.files)
+      })
+    }, 100)
+    return function () {
+      disposed = true
+      clearTimeout(timer)
+    }
+  }, [mentionQuery, activeProjectId])
 
   function chatEngine(chat?: AppChat): string {
     return chat?.engineId || 'claude-code'
@@ -1590,18 +1613,23 @@ export default function Chat() {
     return start(chatEngine(chat), chatModel(chat, chatEngine(chat)), chatOptions(chat), project?.path, chatId)
   }
 
-  function sendTextToChat(chatId: string, text: string, files: SelectedFile[] = []): boolean {
+  async function sendTextToChat(chatId: string, text: string, files: SelectedFile[] = []): Promise<boolean> {
     const trimmed = text.trim()
     if (!trimmed) return false
     const runtime = runtimesRef.current[chatId]
     const targetSession = runtime?.sessionId || (PREVIEW ? sessionId : null)
     if (!targetSession) return false
-    const { chat } = getChatById(chatId)
+    const { project, chat } = getChatById(chatId)
+    const checkpoint = await window.y.app.checkpoint(project?.id)
+    if (!checkpoint.ok || !checkpoint.checkpointId) {
+      addSystemNote(checkpoint.error || 'Native Git checkpoint failed. Install Git and open a Git repository.')
+      return false
+    }
     const history = getMessagesForChat(chatId)
     const firstUserMessage = !history.some((message) => message.role === 'user')
     if (firstUserMessage && activeRef.current.chatId === chatId && title === 'New chat') setTitle(chatTitleFromText(trimmed))
     if (firstUserMessage && chat && chat.title === 'New chat') persistChatMeta(chatId, { title: chatTitleFromText(trimmed) })
-    updateChatMessages(chatId, (m) => m.concat([{ role: 'user', text: trimmed }]))
+    updateChatMessages(chatId, (m) => m.concat([{ role: 'user', text: trimmed, checkpointId: checkpoint.checkpointId }]))
     const chatGoal = activeRef.current.chatId === chatId ? goal : chat?.goal ?? ''
     const requestPrompt = chatGoal ? `Current goal:\n${chatGoal}\n\nUser request:\n${trimmed}` : trimmed
     const prompt = files.length
@@ -1640,40 +1668,35 @@ export default function Chat() {
   function flushQueuedFollowUp(chatId: string) {
     const queued = queuedFollowUpsRef.current[chatId]
     if (!queued) return
-    sendTextToChat(chatId, queued)
+    void sendTextToChat(chatId, queued)
   }
 
-  async function rollbackProviderTurns(chatId: string, turns: number): Promise<boolean> {
-    const current = runtimesRef.current[chatId]?.sessionId
-    if (!current || PREVIEW) return true
-    const res = await window.y.engine.command(current, { name: 'rollback', turns })
-    if (!res.ok) {
-      addSystemNote(res.error || 'This engine could not rollback the code for that turn.')
-      return false
-    }
-    if (res.message) addSystemNote(res.message)
-    return true
+  function copyMessage(text: string) {
+    if (!text) return
+    void navigator.clipboard.writeText(text).then(
+      function () { showToast('Copied message') },
+      function () { showToast('Could not copy message') }
+    )
   }
 
-  async function revertLastTurn() {
-    const chatId = activeRef.current.chatId || activeChatId
-    if (!chatId) return
+  async function resetToMessage(chatId: string, index: number) {
     const list = getMessagesForChat(chatId)
-    let cut = -1
-    for (let i = list.length - 1; i >= 0; i -= 1) {
-      if (list[i].role === 'user') { cut = i; break }
+    if (index < 0 || index >= list.length || list[index].role !== 'assistant') return
+    const checkpointId = list[index].checkpointId
+    if (!checkpointId) {
+      addSystemNote('This older message has no code checkpoint, so it cannot reset code safely.')
+      return
     }
-    if (cut === -1) return
+    const { project } = getChatById(chatId)
+    const restored = await window.y.app.restoreCheckpoint(project?.id, checkpointId)
+    if (!restored.ok) {
+      addSystemNote(restored.error || 'Could not restore the code checkpoint.')
+      return
+    }
     const current = runtimesRef.current[chatId]?.sessionId
     if (runtimesRef.current[chatId]?.busy && current && !PREVIEW) await window.y.engine.cancel(current)
-    const rolledBack = await rollbackProviderTurns(chatId, 1)
-    if (!rolledBack) return
-    const nextMessages = list.slice(0, cut)
+    const nextMessages = list.slice(0, index + 1)
     replaceChatMessages(chatId, nextMessages)
-    if (!nextMessages.some((message) => message.role === 'user')) {
-      setTitle('New chat')
-      persistChatMeta(chatId, { title: 'New chat' })
-    }
     updateQueuedFollowUps((queued) => {
       if (!queued[chatId]) return queued
       const next = { ...queued }
@@ -1682,6 +1705,7 @@ export default function Chat() {
     })
     setEditingMessage(null)
     await restartChatSession(chatId)
+    showToast('Reset conversation to this point')
   }
 
   function beginEditUserMessage(chatId: string, index: number, text: string) {
@@ -1693,11 +1717,19 @@ export default function Chat() {
     const text = editingMessage.text.trim()
     if (!text) return
     const list = getMessagesForChat(chatId)
-    const turnsToRollback = Math.max(1, list.slice(index).filter((message) => message.role === 'user').length)
+    const checkpointId = list[index]?.checkpointId
+    if (!checkpointId) {
+      addSystemNote('This older message has no code checkpoint, so it cannot be edited safely.')
+      return
+    }
+    const { project } = getChatById(chatId)
+    const restored = await window.y.app.restoreCheckpoint(project?.id, checkpointId)
+    if (!restored.ok) {
+      addSystemNote(restored.error || 'Could not restore the code checkpoint.')
+      return
+    }
     const current = runtimesRef.current[chatId]?.sessionId
     if (runtimesRef.current[chatId]?.busy && current && !PREVIEW) await window.y.engine.cancel(current)
-    const rolledBack = await rollbackProviderTurns(chatId, turnsToRollback)
-    if (!rolledBack) return
     const nextMessages = list.slice(0, index)
     replaceChatMessages(chatId, nextMessages)
     updateQueuedFollowUps((queued) => {
@@ -1712,7 +1744,7 @@ export default function Chat() {
     }
     setEditingMessage(null)
     await restartChatSession(chatId)
-    sendTextToChat(chatId, text)
+    void sendTextToChat(chatId, text)
   }
 
   function cancelEditUserMessage() {
@@ -2026,7 +2058,19 @@ export default function Chat() {
         if (e.ok) {
           if (notify) playCompletionSound()
           if (activeRef.current.chatId !== chatId) markChatDone(chatId)
-          flushQueuedFollowUp(chatId)
+          const { project } = getChatById(chatId)
+          void window.y.app.checkpoint(project?.id).then((checkpoint) => {
+            if (checkpoint.ok && checkpoint.checkpointId) {
+              updateChatMessages(chatId, (list) => {
+                const index = list.findLastIndex((message) => message.role === 'assistant')
+                if (index === -1) return list
+                const next = list.slice()
+                next[index] = { ...next[index], checkpointId: checkpoint.checkpointId }
+                return next
+              })
+            }
+            flushQueuedFollowUp(chatId)
+          })
         }
       } else if (e.kind === 'error') {
         seenToolEventsRef.current = {}
@@ -2080,12 +2124,32 @@ export default function Chat() {
 
   useEffect(() => {
     if (!appReady || !activeProjectId) return
-    let disposed = false
-    void window.y.app.listFiles(activeProjectId).then(function (res) {
-      if (!disposed && res.ok) setProjectFiles(res.files)
+    const off = window.y.app.onFilesChanged(function (payload) {
+      if (payload.projectId !== activeProjectId) return
+      const loaded = Object.keys(projectDirectoriesRef.current)
+      const affected = new Set<string>()
+      if (!payload.paths.length || payload.paths.includes('')) {
+        for (const directory of loaded) affected.add(directory)
+      } else {
+        for (const rawPath of payload.paths) {
+          const changedPath = rawPath.replace(/\\/g, '/').replace(/^\.\//, '')
+          const slash = changedPath.lastIndexOf('/')
+          const parent = slash === -1 ? '' : changedPath.slice(0, slash)
+          if (Object.prototype.hasOwnProperty.call(projectDirectoriesRef.current, parent)) affected.add(parent)
+          if (Object.prototype.hasOwnProperty.call(projectDirectoriesRef.current, changedPath)) affected.add(changedPath)
+        }
+      }
+      for (const directory of affected) void loadProjectDirectory(activeProjectId, directory, true)
     })
+    setProjectDirectories({})
+    projectDirectoriesRef.current = {}
+    pendingFolderRefreshRef.current.clear()
+    setExpandedFolders(new Set())
+    void loadProjectDirectory(activeProjectId, '', true)
+    void window.y.app.watchFiles(activeProjectId)
     return function () {
-      disposed = true
+      off()
+      void window.y.app.unwatchFiles(activeProjectId)
     }
   }, [appReady, activeProjectId])
 
@@ -2148,7 +2212,7 @@ export default function Chat() {
     setInput('')
     const files = attachments
     setAttachments([])
-    sendTextToChat(chatId, text, files)
+    void sendTextToChat(chatId, text, files)
   }
 
   function steerTurn() {
@@ -2252,10 +2316,38 @@ export default function Chat() {
     })
   }
 
-  async function refreshProjectFiles(projectId = activeProjectId) {
-    if (!projectId) return
-    const res = await window.y.app.listFiles(projectId)
-    if (res.ok) setProjectFiles(res.files)
+  async function loadProjectDirectory(projectId: string, directory = '', force = false) {
+    const key = directory.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/$/, '')
+    const requestKey = `${projectId}:${key}`
+    if (!force && Object.prototype.hasOwnProperty.call(projectDirectoriesRef.current, key)) return
+    if (loadingFoldersRef.current.has(requestKey)) {
+      if (force) pendingFolderRefreshRef.current.add(requestKey)
+      return
+    }
+    loadingFoldersRef.current.add(requestKey)
+    setLoadingFolders(new Set(loadingFoldersRef.current))
+    const res = await window.y.app.listDirectory(projectId, key)
+    loadingFoldersRef.current.delete(requestKey)
+    setLoadingFolders(new Set(loadingFoldersRef.current))
+    const queuedRefresh = pendingFolderRefreshRef.current.delete(requestKey)
+    if (activeRef.current.projectId !== projectId) return
+    if (res.ok) {
+      setProjectDirectories(function (current) {
+        const next = { ...current, [key]: res.entries }
+        projectDirectoriesRef.current = next
+        return next
+      })
+    } else if (key) {
+      setProjectDirectories(function (current) {
+        const next = { ...current }
+        delete next[key]
+        projectDirectoriesRef.current = next
+        return next
+      })
+    }
+    if (queuedRefresh) {
+      void loadProjectDirectory(projectId, key, true)
+    }
   }
 
   async function openFile(file: SelectedFile) {
@@ -2286,7 +2378,9 @@ export default function Chat() {
     }
     setSavedFileContent(fileContent)
     setFileStatus('Saved')
-    void refreshProjectFiles()
+    const relPath = (activeFile.relPath || activeFile.name).replace(/\\/g, '/')
+    const slash = relPath.lastIndexOf('/')
+    void loadProjectDirectory(activeProjectId!, slash === -1 ? '' : relPath.slice(0, slash), true)
     setTimeout(() => setFileStatus((status) => (status === 'Saved' ? '' : status)), 1400)
   }
 
@@ -2495,8 +2589,15 @@ export default function Chat() {
           height: 44px;
           padding-left: var(--y-toggle-x);
           padding-top: 12px;
+          gap: 8px;
           -webkit-app-region: no-drag;
-          pointer-events: auto;
+          pointer-events: none;
+        }
+        .y-toggle-title {
+          font-size: 14px; font-weight: 500; color: var(--y-text);
+          overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+          max-width: 220px; padding-top: 4px; line-height: 20px;
+          pointer-events: none;
         }
         .y-sidebar-toggle,
         .y-toolbar-btn {
@@ -2513,6 +2614,7 @@ export default function Chat() {
           flex-shrink: 0;
           padding: 0;
           line-height: 0;
+          pointer-events: auto;
         }
         .y-sidebar-toggle svg,
         .y-toolbar-btn svg { width: 16px; height: 16px; display: block; }
@@ -2645,12 +2747,9 @@ export default function Chat() {
         }
         .y-header-drag {
           flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px;
+          justify-content: flex-end;
           -webkit-app-region: drag;
         }
-        html.platform-darwin .y-app:not(.sidebar-closed) .y-header-drag {
-          justify-content: flex-end;
-        }
-        .y-app:not(.sidebar-closed) .y-title { display: none; }
         .y-header button, .y-header .y-modify-btn { -webkit-app-region: no-drag; }
         .y-icon-btn {
           width: 32px; height: 32px; border-radius: 8px; border: 1px solid var(--y-border);
@@ -2792,19 +2891,32 @@ export default function Chat() {
         .y-file-markdown::-webkit-scrollbar-track { background: transparent; }
         .y-file-markdown::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 99px; }
         .y-file-markdown::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.22); }
-        .y-file-markdown > .md-body {
-          max-width: 860px; margin: 0 auto; padding: 30px 34px 70px;
+        .y-file-markdown > * {
+          max-width: 860px; margin-left: auto; margin-right: auto;
         }
-        .y-file-markdown .md-body { font-size: 15px; line-height: 1.78; gap: 20px; }
-        .y-file-markdown .md-h1 { font-size: 28px; line-height: 1.18; margin-top: 40px; margin-bottom: 10px; }
-        .y-file-markdown .md-h2 { font-size: 22px; line-height: 1.25; margin-top: 32px; margin-bottom: 8px; }
-        .y-file-markdown .md-h3 { font-size: 17px; line-height: 1.35; margin-top: 24px; margin-bottom: 5px; }
-        .y-file-markdown .md-h1:first-child, .y-file-markdown .md-h2:first-child, .y-file-markdown .md-h3:first-child { margin-top: 4px; }
-        .y-file-markdown .md-p { color: rgba(255,255,255,0.84); line-height: 1.82; margin: 3px 0; }
-        .y-file-markdown .md-list { padding-left: 28px; margin: 2px 0; }
-        .y-file-markdown .md-list li { margin: 7px 0; line-height: 1.72; }
-        .y-file-markdown .md-quote { margin: 8px 0; padding: 14px 18px; }
-        .y-file-markdown .md-code { margin: 6px 0; }
+        .y-file-markdown { padding: 30px 34px 70px; font-size: 15px; line-height: 1.78; color: rgba(255,255,255,0.88); }
+        .y-file-markdown h1 { font-size: 28px; line-height: 1.18; font-weight: 700; margin: 40px 0 10px; color: rgba(255,255,255,0.95); letter-spacing: -0.02em; }
+        .y-file-markdown h2 { font-size: 22px; line-height: 1.25; font-weight: 600; margin: 32px 0 8px; color: rgba(255,255,255,0.95); letter-spacing: -0.015em; border-bottom: 1px solid rgba(255,255,255,0.07); padding-bottom: 6px; }
+        .y-file-markdown h3 { font-size: 17px; line-height: 1.35; font-weight: 600; margin: 24px 0 5px; color: rgba(255,255,255,0.92); }
+        .y-file-markdown h4, .y-file-markdown h5, .y-file-markdown h6 { font-weight: 600; margin: 16px 0 4px; color: rgba(255,255,255,0.88); }
+        .y-file-markdown > h1:first-child, .y-file-markdown > h2:first-child, .y-file-markdown > h3:first-child { margin-top: 4px; }
+        .y-file-markdown p { color: rgba(255,255,255,0.84); line-height: 1.82; margin: 8px 0; }
+        .y-file-markdown ul, .y-file-markdown ol { padding-left: 28px; margin: 6px 0; }
+        .y-file-markdown li { margin: 7px 0; line-height: 1.72; color: rgba(255,255,255,0.84); }
+        .y-file-markdown blockquote { border-left: 3px solid rgba(255,255,255,0.18); margin: 12px 0; padding: 10px 18px; color: rgba(255,255,255,0.6); background: rgba(255,255,255,0.03); border-radius: 0 6px 6px 0; }
+        .y-file-markdown hr { border: none; border-top: 1px solid rgba(255,255,255,0.1); margin: 24px 0; }
+        .y-file-markdown a { color: rgba(160,180,255,0.9); text-decoration: none; }
+        .y-file-markdown a:hover { text-decoration: underline; }
+        .y-file-markdown img { max-width: 100% !important; width: auto !important; height: auto !important; display: inline-block; border-radius: 6px; vertical-align: middle; }
+        .y-file-markdown code { font-family: var(--y-mono); font-size: 0.875em; background: rgba(255,255,255,0.08); border-radius: 5px; padding: 2px 6px; }
+        .y-file-markdown pre { background: #1a1c24; border: 1px solid rgba(255,255,255,0.07); border-radius: 10px; padding: 16px; overflow-x: auto; margin: 12px 0; }
+        .y-file-markdown pre code { background: none; padding: 0; font-size: 13px; border-radius: 0; }
+        .y-file-markdown table { border-collapse: collapse; width: 100%; font-size: 13.5px; line-height: 1.5; margin: 12px 0; }
+        .y-file-markdown th, .y-file-markdown td { padding: 7px 14px; border: 1px solid rgba(255,255,255,0.08); text-align: left; vertical-align: top; }
+        .y-file-markdown th { background: rgba(255,255,255,0.05); font-weight: 600; color: var(--y-text); }
+        .y-file-markdown td { color: rgba(255,255,255,0.78); }
+        .y-file-markdown tr:hover td { background: rgba(255,255,255,0.025); }
+        .y-file-markdown [align="center"], .y-file-markdown center { text-align: center; }
         .md-hr { border: none; border-top: 1px solid rgba(255,255,255,0.1); margin: 22px 0; }
         .md-table-wrap { overflow-x: auto; }
         .md-table { border-collapse: collapse; width: 100%; font-size: 13.5px; line-height: 1.5; }
@@ -2872,6 +2984,24 @@ export default function Chat() {
         }
         .y-inline-edit::selection { background: rgba(166, 132, 82, 0.36); }
         .y-assistant { display: flex; flex-direction: column; gap: 10px; }
+        .y-assistant-footer { min-height: 28px; display: flex; align-items: center; gap: 3px; color: var(--y-text-3); }
+        .y-assistant-footer .y-message-action {
+          width: 32px; height: 32px; border: 0; background: transparent; box-shadow: none;
+        }
+        .y-message-menu { position: relative; }
+        .y-message-menu > summary { list-style: none; }
+        .y-message-menu > summary::-webkit-details-marker { display: none; }
+        .y-message-menu-popover {
+          position: absolute; left: 0; top: calc(100% + 6px); z-index: 20;
+          min-width: 190px; padding: 6px; border: 1px solid var(--y-border); border-radius: 12px;
+          background: rgba(35,33,31,0.98); box-shadow: 0 18px 40px rgba(0,0,0,0.42);
+        }
+        .y-message-menu-popover button {
+          width: 100%; display: flex; align-items: center; gap: 10px; padding: 9px 10px;
+          border: 0; border-radius: 8px; background: transparent; color: var(--y-text);
+          font: inherit; font-size: 13px; text-align: left; cursor: pointer;
+        }
+        .y-message-menu-popover button:hover { background: rgba(255,255,255,0.07); }
         .y-engine-badge {
           align-self: flex-start; font-family: var(--y-mono); font-size: 11px; font-weight: 600;
           letter-spacing: 0.04em; text-transform: uppercase; color: var(--y-text-3);
@@ -2880,6 +3010,13 @@ export default function Chat() {
         .y-assistant-body { display: flex; flex-direction: column; gap: 12px; }
         .md-body { display: flex; flex-direction: column; gap: 12px; font-size: 14px; line-height: 1.6; color: rgba(255,255,255,0.88); }
         .md-p { margin: 0; }
+        .md-html img { max-width: 100% !important; width: auto !important; max-height: 280px; height: auto !important; display: inline-block; border-radius: 6px; vertical-align: middle; }
+        .md-html a { color: rgba(180,160,255,0.9); text-decoration: none; }
+        .md-html a:hover { text-decoration: underline; }
+        .md-html [align="center"], .md-html center { text-align: center; display: block; }
+        .md-html [align="center"] img, .md-html center img { margin: 0 auto; }
+        .md-html picture { display: inline; }
+        .md-html source { display: none; }
         .md-list { margin: 0; padding-left: 20px; }
         .md-list li { margin: 4px 0; }
         .md-inline { font-family: 'Fira Code', 'JetBrains Mono', 'Cascadia Code', ui-monospace, monospace; font-size: 0.88em; background: rgba(255,255,255,0.08); border-radius: 5px; padding: 1px 6px; }
@@ -3119,6 +3256,7 @@ export default function Chat() {
             >
               <Icon name="panel" size={16} />
             </button>
+            <span className="y-toggle-title" data-testid="chat-title">{title}</span>
           </div>
         </div>
 
@@ -3277,11 +3415,8 @@ export default function Chat() {
         <div className="y-main" data-testid="y-main">
           {toast ? <div className="y-toast">{toast}</div> : null}
           <header className="y-header">
-            {!sidebarOpen ? <div className="y-header-lead" aria-hidden="true" /> : null}
+            <div className="y-header-lead" aria-hidden="true" />
             <div className="y-header-drag">
-            <span className="y-title" data-testid="chat-title">
-              {title}
-            </span>
             <div className="y-header-actions">
               {!fileRailOpen && (
                 <button
@@ -3361,7 +3496,12 @@ export default function Chat() {
                   </div>
                 ) : fileMode === 'preview' && isMarkdownFile(activeFile) ? (
                   <div className="y-file-markdown" data-testid="markdown-preview">
-                    <AssistantBody text={fileContent} />
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      rehypePlugins={[rehypeRaw]}
+                    >
+                      {fileContent}
+                    </ReactMarkdown>
                   </div>
                 ) : fileMode === 'preview' ? (
                   <pre className="y-file-code-pre" aria-label={`View ${activeFile.name}`}>
@@ -3430,7 +3570,6 @@ export default function Chat() {
                   const key = `${m.role}-${m.id ?? i}`
                   if (m.role === 'thinking') return null
 	                  if (m.role === 'user') {
-	                    const isLastUser = !messages.slice(i + 1).some((item) => item.role === 'user')
 		                    const editingDraft =
 			                      editingMessage?.chatId === activeChatId && editingMessage?.index === i ? editingMessage : null
 		                    const editing = Boolean(editingDraft)
@@ -3479,23 +3618,21 @@ export default function Chat() {
 	                                <button
 	                                  type="button"
 	                                  className="y-message-action"
+	                                  aria-label="Copy message"
+	                                  title="Copy message"
+	                                  onClick={() => copyMessage(m.text ?? '')}
+	                                >
+	                                  <Icon name="copy" size={13} />
+	                                </button>
+	                                <button
+	                                  type="button"
+	                                  className="y-message-action"
 	                                  aria-label="Edit message"
 	                                  title="Edit message"
 	                                  onClick={() => beginEditUserMessage(activeChatId, i, m.text ?? '')}
 	                                >
 	                                  <Icon name="edit" size={13} />
 	                                </button>
-	                                {isLastUser ? (
-	                                  <button
-	                                    type="button"
-	                                    className="y-message-action"
-	                                    aria-label="Revert last turn"
-	                                    title="Revert last turn"
-	                                    onClick={() => void revertLastTurn()}
-	                                  >
-	                                    <Icon name="undo" size={13} />
-	                                  </button>
-	                                ) : null}
 	                              </>
 	                            )}
 	                          </div> : null}
@@ -3509,6 +3646,36 @@ export default function Chat() {
 	                      <div key={key} className="y-assistant" data-testid="assistant-message">
 	                        <span className="y-engine-badge">{msgEngineLabel}</span>
 	                        <AssistantBody text={m.text ?? ''} />
+	                        <div className="y-assistant-footer">
+	                          <button
+	                            type="button"
+	                            className="y-message-action"
+	                            aria-label="Copy message"
+	                            title="Copy message"
+	                            onClick={() => copyMessage(m.text ?? '')}
+	                          >
+	                            <Icon name="copy" size={18} />
+	                          </button>
+	                          {activeChatId ? (
+	                            <details className="y-message-menu">
+	                              <summary className="y-message-action" aria-label="More message actions" title="More">
+	                                <Icon name="menu" size={18} />
+	                              </summary>
+	                              <div className="y-message-menu-popover">
+	                                <button
+	                                  type="button"
+	                                  onClick={(event) => {
+	                                    event.currentTarget.closest('details')?.removeAttribute('open')
+	                                    void resetToMessage(activeChatId, i)
+	                                  }}
+	                                >
+	                                  <Icon name="undo" size={15} />
+	                                  Reset to this point
+	                                </button>
+	                              </div>
+	                            </details>
+	                          ) : null}
+	                        </div>
 	                      </div>
 	                    )
 	                  }
@@ -3769,8 +3936,8 @@ export default function Chat() {
               </button>
             </div>
             <div className="y-file-rail-list">
-              {projectFiles.length ? (
-                buildVisibleTree(projectFiles, expandedFolders).map((node) => {
+              {projectDirectories['']?.length ? (
+                buildVisibleTree(projectDirectories, expandedFolders).map((node) => {
                   const indent = 10 + node.depth * 16
                   if (node.kind === 'folder') {
                     const isOpen = expandedFolders.has(node.folderPath)
@@ -3780,18 +3947,23 @@ export default function Chat() {
                         key={node.folderPath}
                         className="y-file-row y-file-folder"
                         style={{ paddingLeft: indent }}
-                        onClick={() => setExpandedFolders((prev) => {
-                          const next = new Set(prev)
-                          if (next.has(node.folderPath)) next.delete(node.folderPath)
-                          else next.add(node.folderPath)
-                          return next
-                        })}
+                        onClick={() => {
+                          const opening = !expandedFolders.has(node.folderPath)
+                          setExpandedFolders((prev) => {
+                            const next = new Set(prev)
+                            if (next.has(node.folderPath)) next.delete(node.folderPath)
+                            else next.add(node.folderPath)
+                            return next
+                          })
+                          if (opening && activeProjectId) void loadProjectDirectory(activeProjectId, node.folderPath)
+                        }}
                       >
                         <FolderIcon open={isOpen} size={20} />
                         <span className="y-file-row-name">{node.name}</span>
                         <span className="y-file-folder-chevron" style={{ transform: isOpen ? 'rotate(90deg)' : 'rotate(0deg)' }}>
                           <Icon name="chevron" size={12} />
                         </span>
+                        {loadingFolders.has(`${activeProjectId}:${node.folderPath}`) ? <span className="y-file-loading">...</span> : null}
                       </button>
                     )
                   }
@@ -3810,6 +3982,8 @@ export default function Chat() {
                     </button>
                   )
                 })
+              ) : loadingFolders.has(`${activeProjectId}:`) ? (
+                <div className="y-file-empty">Loading files...</div>
               ) : (
                 <div className="y-file-empty">No files found in this folder.</div>
               )}

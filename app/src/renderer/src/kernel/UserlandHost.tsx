@@ -3,6 +3,9 @@ import * as ReactJsxRuntime from 'react/jsx-runtime'
 import { publishVerdict } from './userlandStatus'
 import XtermTerminal from './XtermTerminal'
 import hljs from 'highlight.js/lib/common'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import rehypeRaw from 'rehype-raw'
 
 // Turn compiled CommonJS code into a live React component.
 function buildComponent(code: string): React.ComponentType {
@@ -14,6 +17,9 @@ function buildComponent(code: string): React.ComponentType {
     if (name === 'react/jsx-runtime' || name === 'react/jsx-dev-runtime') return ReactJsxRuntime
     if (name === '@renderer/kernel/XtermTerminal') return XtermTerminal
     if (name === 'highlight.js/lib/common') return hljs
+    if (name === 'react-markdown') return ReactMarkdown
+    if (name === 'remark-gfm') return remarkGfm
+    if (name === 'rehype-raw') return rehypeRaw
     throw new Error(`Userland imported "${name}", which y doesn't expose yet`)
   }
   // eslint-disable-next-line no-new-func, @typescript-eslint/no-implied-eval
@@ -52,8 +58,8 @@ class UserlandErrorBoundary extends React.Component<
   }
 }
 
-// UserlandHost compiles + mounts Userland, watches live edits, auto-rolls-back on crash.
-// Keep/Discard lives in ModifyChat — only after a Modify turn finishes.
+// UserlandHost compiles + mounts Userland, watches live edits, snapshots healthy
+// renders, and auto-rolls-back on crash.
 function UserlandHost(): React.JSX.Element {
   const [Component, setComponent] = React.useState<React.ComponentType | null>(null)
   const [error, setError] = React.useState('')
@@ -124,8 +130,8 @@ function UserlandHost(): React.JSX.Element {
     } else {
       publishVerdict({ outcome: 'ok' })
     }
-    void window.y.userland.diff().then((d) => {
-      if (d.ok && d.hash) setSnap({ hash: d.hash, count: d.count ?? 0 })
+    void window.y.userland.snapshot().then((result) => {
+      if (result.ok && result.hash) setSnap({ hash: result.hash, count: result.count ?? 0 })
     })
   }, [Component, loadId])
 
