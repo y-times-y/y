@@ -340,6 +340,7 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
   const [sessionId, setSessionId] = React.useState<string | null>(null)
   const [messages, setMessages] = React.useState<Msg[]>([])
   const [inputValue, setInputValue] = React.useState('')
+  const [hasComposerInput, setHasComposerInput] = React.useState(false)
   const [queuedFollowUps, setQueuedFollowUps] = React.useState<QueuedFollowUp[]>([])
   const [busy, setBusy] = React.useState(false)
   const [elapsedTick, setElapsedTick] = React.useState(() => Date.now())
@@ -350,6 +351,8 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
   const messagesRef = React.useRef<Msg[]>([])
   const queuedFollowUpsRef = React.useRef<QueuedFollowUp[]>([])
   const inputRef = React.useRef<HTMLTextAreaElement | null>(null)
+  const inputValueRef = React.useRef('')
+  const hasComposerInputRef = React.useRef(false)
   const appStateRef = React.useRef<AppState | null>(null)
   const activeConfigKeyRef = React.useRef('')
   const firstTurnRef = React.useRef(true)
@@ -360,12 +363,12 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
   const logRef = React.useRef<HTMLDivElement | null>(null)
   const streamQueueRef = React.useRef<
     Array<
-      | { kind: 'text'; text: string }
       | { kind: 'thinking'; text: string }
       | { kind: 'tool'; event: Extract<AgentEvent, { kind: 'tool' }> }
     >
   >([])
   const streamRafRef = React.useRef<number | null>(null)
+  const pendingAssistantTextRef = React.useRef('')
 
   messagesRef.current = messages
   queuedFollowUpsRef.current = queuedFollowUps
@@ -377,7 +380,7 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
     return () => window.clearInterval(id)
   }, [busy])
 
-  const composerValue = (): string => inputRef.current?.value ?? inputValue
+  const composerValue = (): string => inputRef.current?.value ?? inputValueRef.current
 
   const resizeComposer = React.useCallback((element = inputRef.current): void => {
     if (!element) return
@@ -387,9 +390,28 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
 
   const setComposerValue = React.useCallback(
     (value: string): void => {
-      setInputValue(value)
+      inputValueRef.current = value
       if (inputRef.current && inputRef.current.value !== value) inputRef.current.value = value
+      const hasValue = Boolean(value.trim())
+      hasComposerInputRef.current = hasValue
+      setHasComposerInput(hasValue)
+      setInputValue(value.trimStart().startsWith('/') ? value : '')
       requestAnimationFrame(() => resizeComposer())
+    },
+    [resizeComposer]
+  )
+
+  const handleComposerInput = React.useCallback(
+    (value: string): void => {
+      inputValueRef.current = value
+      resizeComposer()
+      const hasValue = Boolean(value.trim())
+      if (hasComposerInputRef.current !== hasValue) {
+        hasComposerInputRef.current = hasValue
+        setHasComposerInput(hasValue)
+      }
+      const suggestionValue = value.trimStart().startsWith('/') ? value : ''
+      setInputValue((current) => (current === suggestionValue ? current : suggestionValue))
     },
     [resizeComposer]
   )
@@ -402,8 +424,7 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
     setMessages((m) => {
       let next = m
       for (const item of batch) {
-        if (item.kind === 'text') next = append(next, item.text)
-        else if (item.kind === 'thinking') next = appendThinking(next, item.text)
+        if (item.kind === 'thinking') next = appendThinking(next, item.text)
         else next = upsertTool(next, item.event)
       }
       messagesRef.current = next
@@ -414,7 +435,6 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
   const enqueueStream = React.useCallback(
     (
       item:
-        | { kind: 'text'; text: string }
         | { kind: 'thinking'; text: string }
         | { kind: 'tool'; event: Extract<AgentEvent, { kind: 'tool' }> }
     ): void => {
@@ -429,6 +449,17 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
     requestAnimationFrame(() => {
       const el = logRef.current
       if (el) el.scrollTop = el.scrollHeight
+    })
+  }, [])
+
+  const flushAssistantText = React.useCallback((): void => {
+    const text = pendingAssistantTextRef.current
+    if (!text) return
+    pendingAssistantTextRef.current = ''
+    setMessages((m) => {
+      const next = append(m, text)
+      messagesRef.current = next
+      return next
     })
   }, [])
 
@@ -634,7 +665,7 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
         setStatus(e.status)
       } else if (e.kind === 'text') {
         setStatus('')
-        enqueueStream({ kind: 'text', text: e.text })
+        pendingAssistantTextRef.current += e.text
       } else if (e.kind === 'thinking') {
         setStatus('')
         enqueueStream({ kind: 'thinking', text: e.text })
@@ -652,6 +683,11 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
         lastTurnDurationRef.current = turnStartAtRef.current ? Date.now() - turnStartAtRef.current : undefined
         setBusy(false)
         setStatus('')
+        if (streamRafRef.current != null) {
+          cancelAnimationFrame(streamRafRef.current)
+          flushStreamQueue()
+        }
+        flushAssistantText()
         setMessages((m) => {
           const next = finishStreaming(m)
           messagesRef.current = next
@@ -666,6 +702,11 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
       } else if (e.kind === 'error') {
         setBusy(false)
         setStatus('')
+        if (streamRafRef.current != null) {
+          cancelAnimationFrame(streamRafRef.current)
+          flushStreamQueue()
+        }
+        flushAssistantText()
         setMessages((m) => {
           const next = finishStreaming(m)
           messagesRef.current = next
@@ -679,7 +720,7 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
       if (streamRafRef.current != null) cancelAnimationFrame(streamRafRef.current)
       off()
     }
-  }, [enqueueStream])
+  }, [enqueueStream, flushAssistantText, flushStreamQueue])
 
   React.useEffect(() => {
     let cancelled = false
@@ -809,6 +850,7 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
       : request
     firstTurnRef.current = false
     setComposerValue('')
+    pendingAssistantTextRef.current = ''
     retriesRef.current = 0
     turnStartAtRef.current = Date.now()
     lastTurnDurationRef.current = undefined
@@ -1062,8 +1104,7 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
             rows={1}
             data-native-input="true"
             onChange={(e) => {
-              setInputValue(e.currentTarget.value)
-              resizeComposer(e.currentTarget)
+              handleComposerInput(e.currentTarget.value)
             }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
@@ -1079,9 +1120,9 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
               className="modify-send"
               onClick={sendOrInterrupt}
               disabled={!sessionId}
-              aria-label={busy && !composerValue().trim() ? 'Interrupt' : busy ? 'Queue follow-up' : 'Send'}
+              aria-label={busy && !hasComposerInput ? 'Interrupt' : busy ? 'Queue follow-up' : 'Send'}
             >
-              {busy && !inputValue.trim() ? <ModifyStopIcon size={16} /> : <ModifySendIcon size={16} />}
+              {busy && !hasComposerInput ? <ModifyStopIcon size={16} /> : <ModifySendIcon size={16} />}
             </button>
           </div>
         </div>

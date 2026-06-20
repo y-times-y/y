@@ -1170,7 +1170,7 @@ html.is-modify-resizing .modify-rail {
 
 .modify-composer-wrap {
   flex-shrink: 0;
-  padding: 0 16px 16px;
+  padding: 0 24px 22px;
 }
 
 .modify-composer {
@@ -1192,7 +1192,7 @@ html.is-modify-resizing .modify-rail {
   font: inherit;
   font-size: 14px;
   line-height: 22px;
-  color: var(--ev-c-text-1);
+  color: inherit;
   background: transparent;
   border: none;
   outline: none;
@@ -1201,6 +1201,16 @@ html.is-modify-resizing .modify-rail {
   max-height: 164px;
   overflow-y: auto;
 }
+
+.modify-composer textarea {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+}
+
+.modify-composer textarea::-webkit-scrollbar { width: 4px; }
+.modify-composer textarea::-webkit-scrollbar-track { background: transparent; }
+.modify-composer textarea::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.1); border-radius: 99px; }
+.modify-composer textarea::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.2); }
 
 .modify-suggest {
   position: absolute;
