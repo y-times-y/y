@@ -241,10 +241,9 @@ export interface StartOpts {
   effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
   options?: EngineRunOptions
   cwd?: string
-  // 'read' (default): the agent can explore but not modify — the normal chat.
-  // 'write': the agent may edit files in its cwd — used by the Kernel's Modify
-  // surface, where cwd is pinned to the Userland dir so edits stay scoped there.
-  mode?: 'read' | 'write'
+  // 'native': defer tools, approvals, and sandboxing to the official CLI config.
+  // 'read'/'write': Kernel-owned scopes used by protected surfaces such as Modify.
+  mode?: 'native' | 'read' | 'write'
 }
 
 // A live conversation with one engine. send() runs one turn; the engine streams

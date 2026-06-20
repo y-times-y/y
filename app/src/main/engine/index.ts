@@ -27,7 +27,7 @@ interface StartArgs {
   model?: string
   options?: EngineRunOptions
   cwd?: string
-  mode?: 'read' | 'write'
+  mode?: StartOpts['mode']
 }
 
 function parseModelChoice(model?: string): Pick<StartOpts, 'model' | 'effort'> {

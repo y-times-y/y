@@ -4,6 +4,15 @@ import { createRoot } from 'react-dom/client'
 const params = new URLSearchParams(window.location.search)
 ;(window as Window & { __Y_PREVIEW__?: boolean }).__Y_PREVIEW__ = true
 const engineListeners: Array<(payload: EngineEventPayload) => void> = []
+const projectFileListeners: Array<(payload: { projectId: string; paths: string[] }) => void> = []
+const listedDirectories: string[] = []
+;(window as Window & { __listedDirectories?: string[] }).__listedDirectories = listedDirectories
+;(window as Window & { __emitProjectFilesChanged?: (projectId?: string, paths?: string[]) => void }).__emitProjectFilesChanged = (
+  projectId = 'preview-ytimesy',
+  paths = ['agent-created.ts']
+) => {
+  for (const listener of projectFileListeners) listener({ projectId, paths })
+}
 ;(window as Window & { __emitEngineEvent?: (event: AgentEvent, sessionId?: string) => void }).__emitEngineEvent = (
   event,
   sessionId = 'preview'
@@ -37,21 +46,49 @@ const previewMessages: AppMsg[] =
     : [
           {
             role: 'assistant',
+            checkpointId: '00000000-0000-4000-8000-000000000001',
             text:
               'Here is a quick example:\n\n```python\nresult = await run_action("click", {"index": 3})\n```\n\nLet me know if you want to iterate on the layout or typography next.'
           },
-          { role: 'user', text: 'Can you make the sidebar feel more like the reference?' }
+          { role: 'user', text: 'Can you make the sidebar feel more like the reference?', checkpointId: '00000000-0000-4000-8000-000000000002' }
         ]
 
 const previewFileContents: Record<string, string> = {
   '/Users/hetpatel/Desktop/ytimesy/README.md':
-    '# ytimesy\n\nA chat-first coding-agent desktop app.\n\n- Open files from the right rail\n- Preview markdown cleanly\n- Edit project files in place\n',
+    '# ytimesy\n\nA chat-first coding-agent desktop app.\n\n```ts\nconst product = "y"\n```\n\n- Open files from the right rail\n- Preview markdown cleanly\n- Edit project files in place\n',
   '/Users/hetpatel/Desktop/ytimesy/app/userland-seed/panel.tsx':
     'export default function Panel() {\n  return <div>panel</div>\n}\n',
   '/Users/hetpatel/Desktop/ytimesy/app/src/main/engine/codex.ts':
     'export const engine = "codex"\n',
   '/Users/hetpatel/Desktop/ytimesy/app/e2e/ui.spec.ts':
     'import { test } from "@playwright/test"\n'
+}
+
+const previewDirectories: Record<string, ProjectDirectoryEntry[]> = {
+  '': [
+    { kind: 'directory', name: 'app', path: '/Users/hetpatel/Desktop/ytimesy/app', relPath: 'app' },
+    { kind: 'file', name: 'README.md', path: '/Users/hetpatel/Desktop/ytimesy/README.md', relPath: 'README.md', size: 1200 }
+  ],
+  app: [
+    { kind: 'directory', name: 'e2e', path: '/Users/hetpatel/Desktop/ytimesy/app/e2e', relPath: 'app/e2e' },
+    { kind: 'directory', name: 'src', path: '/Users/hetpatel/Desktop/ytimesy/app/src', relPath: 'app/src' },
+    { kind: 'directory', name: 'userland-seed', path: '/Users/hetpatel/Desktop/ytimesy/app/userland-seed', relPath: 'app/userland-seed' }
+  ],
+  'app/e2e': [
+    { kind: 'file', name: 'ui.spec.ts', path: '/Users/hetpatel/Desktop/ytimesy/app/e2e/ui.spec.ts', relPath: 'app/e2e/ui.spec.ts', size: 8500 }
+  ],
+  'app/src': [
+    { kind: 'directory', name: 'main', path: '/Users/hetpatel/Desktop/ytimesy/app/src/main', relPath: 'app/src/main' }
+  ],
+  'app/src/main': [
+    { kind: 'directory', name: 'engine', path: '/Users/hetpatel/Desktop/ytimesy/app/src/main/engine', relPath: 'app/src/main/engine' }
+  ],
+  'app/src/main/engine': [
+    { kind: 'file', name: 'codex.ts', path: '/Users/hetpatel/Desktop/ytimesy/app/src/main/engine/codex.ts', relPath: 'app/src/main/engine/codex.ts', size: 21000 }
+  ],
+  'app/userland-seed': [
+    { kind: 'file', name: 'panel.tsx', path: '/Users/hetpatel/Desktop/ytimesy/app/userland-seed/panel.tsx', relPath: 'app/userland-seed/panel.tsx', size: 48200 }
+  ]
 }
 
 let previewState: AppState = {
@@ -99,7 +136,9 @@ window.y = {
     compile: async () => ({ ok: true, code: '' }),
     snapshot: async () => ({ ok: true }),
     revert: async () => ({ ok: true }),
-    diff: async () => ({ ok: true, dirty: false }),
+    checkpoint: async () => ({ ok: true, checkpointId: crypto.randomUUID() }),
+    restoreCheckpoint: async (checkpointId) => ({ ok: true, checkpointId }),
+    resetToSeed: async () => ({ ok: true }),
     onChanged: () => () => undefined
   },
   engine: {
@@ -166,6 +205,8 @@ window.y = {
   },
   app: {
     getState: async () => previewState,
+    checkpoint: async () => ({ ok: true, checkpointId: crypto.randomUUID() }),
+    restoreCheckpoint: async (_projectId, checkpointId) => ({ ok: true, checkpointId }),
     addProject: async () => ({ ok: false, canceled: true, state: previewState }),
     createChat: async (projectId?: string) => {
       const project = previewState.projects.find((p) => p.id === projectId) ?? previewState.projects[0]
@@ -198,15 +239,25 @@ window.y = {
         }
       ]
     }),
-    listFiles: async () => ({
+    searchFiles: async (_projectId, query) => ({
       ok: true,
-      files: [
-        { name: 'panel.tsx', path: '/Users/hetpatel/Desktop/ytimesy/app/userland-seed/panel.tsx', relPath: 'app/userland-seed/panel.tsx', size: 48200 },
-        { name: 'codex.ts', path: '/Users/hetpatel/Desktop/ytimesy/app/src/main/engine/codex.ts', relPath: 'app/src/main/engine/codex.ts', size: 21000 },
-        { name: 'ui.spec.ts', path: '/Users/hetpatel/Desktop/ytimesy/app/e2e/ui.spec.ts', relPath: 'app/e2e/ui.spec.ts', size: 8500 },
-        { name: 'README.md', path: '/Users/hetpatel/Desktop/ytimesy/README.md', relPath: 'README.md', size: 1200 }
-      ]
+      files: Object.values(previewDirectories)
+        .flat()
+        .filter((entry) => entry.kind === 'file' && (entry.relPath || entry.name).toLowerCase().includes(query.toLowerCase()))
     }),
+    listDirectory: async (_projectId, directory = '') => {
+      listedDirectories.push(directory)
+      return { ok: true, entries: previewDirectories[directory] ?? [] }
+    },
+    watchFiles: async () => ({ ok: true }),
+    unwatchFiles: async () => ({ ok: true }),
+    onFilesChanged: (cb) => {
+      projectFileListeners.push(cb)
+      return () => {
+        const index = projectFileListeners.indexOf(cb)
+        if (index !== -1) projectFileListeners.splice(index, 1)
+      }
+    },
     readProjectFile: async (_projectId, filePath) => ({
       ok: Object.prototype.hasOwnProperty.call(previewFileContents, filePath),
       content: previewFileContents[filePath],

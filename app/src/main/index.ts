@@ -13,7 +13,8 @@ import {
   ensureRepo,
   snapshot as ulSnapshot,
   revert as ulRevert,
-  diff as ulDiff
+  captureCheckpoint,
+  restoreCheckpoint
 } from './userlandGit'
 
 // ---- Userland lives in a writable folder, NOT inside the app bundle ----
@@ -91,9 +92,8 @@ async function ensureUserland(): Promise<void> {
   if (needsWrite) {
     await writeFile(userlandFile(), seed, 'utf-8')
   }
-  // Snapshots are a safety NET, not a hard requirement. If git is missing on the
-  // user's machine, the app must still launch and self-modify — it just loses
-  // snapshot/revert/auto-rollback. So never let repo setup crash boot.
+  // Native Git is required for checkpoints and rollback. Keep boot resilient so
+  // the UI can explain a missing installation instead of crashing at startup.
   try {
     await ensureRepo(userlandDir())
   } catch (err) {
@@ -109,7 +109,10 @@ function createWindow(): void {
     height: 820,
     show: false,
     autoHideMenuBar: true,
-    backgroundColor: '#09090a',
+    backgroundColor: process.platform === 'darwin' ? '#00000000' : '#09090a',
+    ...(process.platform === 'darwin'
+      ? { transparent: true, vibrancy: 'sidebar' as const, visualEffectState: 'active' as const }
+      : {}),
     ...(isMac
       ? {
           // Lose the separate macOS title-bar strip (the brown bar above the UI).
@@ -198,34 +201,46 @@ app.whenReady().then(async () => {
     }
   })
 
-  // Snapshot/revert/diff are backed by the pure-JS git module (no system `git`).
+  // Snapshot/revert are backed by native Git. Userland keeps its own repository,
+  // separate from every project repository.
   // Snapshot = a commit of the current Userland state; no-ops when unchanged.
   ipcMain.handle('userland:snapshot', () => ulSnapshot(userlandDir()))
 
   // Revert = one step of undo: dirty → restore last snapshot; clean → step back one.
   ipcMain.handle('userland:revert', () => ulRevert(userlandDir()))
 
-  // Diff gate (Phase 5b): the pending change since the last snapshot. A clean
-  // render no longer auto-commits — the UI shows this diff for Keep/Discard.
-  ipcMain.handle('userland:diff', () => ulDiff(userlandDir()))
+  ipcMain.handle('userland:checkpoint', () => captureCheckpoint(userlandDir()))
+  ipcMain.handle('userland:restoreCheckpoint', (_e, checkpointId: string) =>
+    restoreCheckpoint(userlandDir(), checkpointId)
+  )
+  ipcMain.handle('userland:resetToSeed', async () => {
+    try {
+      const seed = await readUserlandSeed()
+      await writeFile(userlandFile(), seed, 'utf-8')
+      await ulSnapshot(userlandDir()).catch((err) => {
+        console.warn('[y] Userland reset snapshot unavailable:', err)
+      })
+      for (const window of BrowserWindow.getAllWindows()) {
+        if (!window.isDestroyed()) window.webContents.send('userland:changed')
+      }
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
 
   // ---- Engine bricks (Phase 4): drive a coding-agent CLI from the renderer ----
   // start returns a session id; send/cancel act on it; the actual reply streams
   // back as 'engine:event' pushes (see engine/index.ts → broadcast).
   ipcMain.handle('engine:list', () => listEngines())
   ipcMain.handle('engine:models', () => listModels())
-  // Normal chat is the user's real coding agent. It gets broad write access, like
-  // the official CLI would in a trusted local terminal session.
+  // Normal chat is the user's real coding agent. Do not reinterpret the official
+  // CLI's tools, approvals, or sandbox configuration.
   ipcMain.handle('engine:start', (_e, args: { engine: string; model?: string; options?: EngineRunOptions }) =>
     startSession({
       ...args,
-      options: {
-        ...args.options,
-        claudeDangerouslySkipPermissions: true,
-        codexDangerouslyBypassApprovalsAndSandbox: true
-      },
       cwd: args.options?.workingDirectory?.trim(),
-      mode: 'write'
+      mode: 'native'
     })
   )
   // Modify chat (Kernel-only): write access, pinned to the Userland dir so the
@@ -236,7 +251,12 @@ app.whenReady().then(async () => {
       startSession({
         engine: args.engine,
         model: args.model,
-        options: args.options,
+        options: {
+          ...args.options,
+          claudeToolMode: 'safe',
+          claudeDangerouslySkipPermissions: false,
+          codexDangerouslyBypassApprovalsAndSandbox: false
+        },
         cwd: userlandDir(),
         mode: 'write'
       })

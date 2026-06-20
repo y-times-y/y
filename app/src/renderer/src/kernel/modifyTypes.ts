@@ -1,6 +1,6 @@
 export type Msg =
-  | { role: 'user'; text: string }
-  | { role: 'assistant'; text: string }
+  | { role: 'user'; text: string; checkpointId?: string }
+  | { role: 'assistant'; text: string; checkpointId?: string; durationMs?: number; interrupted?: boolean }
   | { role: 'thinking'; id: string; text: string; streaming?: boolean }
   | {
       role: 'tool'

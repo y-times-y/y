@@ -88,7 +88,7 @@ function isMissingCodexCapability(message: string): boolean {
 interface CodexLine {
   type?: string
   thread_id?: string
-  item?: { id?: string; type?: string; text?: string; command?: string }
+  item?: { id?: string; type?: string; text?: string; command?: string; aggregated_output?: string; output?: string }
   usage?: { reasoning_output_tokens?: number }
   error?: { message?: string }
   message?: string
@@ -248,7 +248,9 @@ class CodexSession implements Session {
     // --sandbox is only valid on the initial `exec`; `resume` rejects the flag,
     // so we pin the mode there via a -c config override instead (verified flow).
     const sandbox = this.opts.mode === 'write' ? 'workspace-write' : 'read-only'
-    if (reviewing) {
+    if (this.opts.mode === 'native') {
+      // Omit sandbox arguments so Codex loads the user's own CLI configuration.
+    } else if (reviewing) {
       // `exec review` has no --sandbox flag; keep sandboxing pinned through config.
       args.push('-c', 'sandbox_mode=' + sandbox)
     } else if (resuming) {
@@ -437,7 +439,7 @@ class CodexSession implements Session {
         return { ok: true, message: `Running codex ${args.join(' ')}.` }
       }
       if (command.name === 'slash') {
-        return { ok: false, error: 'Codex slash commands must be mapped to app-server methods before y can run them.' }
+        return { ok: false, error: 'Codex slash commands are handled by the Codex CLI. Use /plugins or /mcp to open the PTY.' }
       }
       return { ok: false, error: 'Unsupported Codex command.' }
     } catch (err) {
@@ -462,8 +464,10 @@ class CodexSession implements Session {
         clientUserMessageId: randomUUID(),
         input: [{ type: 'text', text: prompt, text_elements: [] }],
         cwd: this.opts.cwd,
-        approvalPolicy: this.codexApprovalPolicy(),
-        sandboxPolicy: this.appServerSandboxPolicy(),
+        ...(this.opts.mode === 'native' ? {} : {
+          approvalPolicy: this.codexApprovalPolicy(),
+          sandboxPolicy: this.appServerSandboxPolicy()
+        }),
         ...(this.opts.model ? { model: this.opts.model } : {}),
         ...(this.opts.effort ? { effort: this.opts.effort } : {})
       })
@@ -563,8 +567,10 @@ class CodexSession implements Session {
     return {
       ...(this.opts.model ? { model: this.opts.model } : {}),
       cwd: this.opts.cwd,
-      approvalPolicy: this.codexApprovalPolicy(),
-      sandbox: this.codexSandboxMode(),
+      ...(this.opts.mode === 'native' ? {} : {
+        approvalPolicy: this.codexApprovalPolicy(),
+        sandbox: this.codexSandboxMode()
+      }),
       ...(this.opts.options?.ephemeral ? { ephemeral: true } : {})
     }
   }
@@ -990,7 +996,7 @@ class CodexSession implements Session {
           phase: 'end',
           verb: 'run',
           target,
-          body: cmd
+          body: item.aggregated_output || item.output || undefined
         })
         break
       }

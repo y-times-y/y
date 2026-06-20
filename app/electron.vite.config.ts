@@ -6,11 +6,8 @@ export default defineConfig({
   main: {
     build: {
       rollupOptions: {
-        // Keep these external — required from node_modules at runtime, not bundled:
-        //  - esbuild: ships a native binary.
-        //  - isomorphic-git: CJS with dynamic require()s (safe-buffer/sha.js) that
-        //    don't survive bundling; diff rides along with it.
-        external: ['esbuild', 'isomorphic-git', 'diff']
+        // esbuild ships a native binary and must resolve from node_modules at runtime.
+        external: ['esbuild']
       },
       copyPublicDir: false
     },

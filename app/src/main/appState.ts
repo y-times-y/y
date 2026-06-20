@@ -1,7 +1,9 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'path'
 import { mkdir, readFile, readdir, stat, writeFile } from 'fs/promises'
+import { watch, type FSWatcher } from 'fs'
 import { randomUUID } from 'crypto'
+import { captureCheckpoint, restoreCheckpoint } from './userlandGit'
 
 type StoredMsg = {
   role: 'user' | 'assistant' | 'tool' | 'thinking'
@@ -16,6 +18,9 @@ type StoredMsg = {
   engineId?: string
   terminalId?: string
   terminalRunning?: boolean
+  checkpointId?: string
+  durationMs?: number
+  interrupted?: boolean
 }
 
 type StoredChat = {
@@ -53,6 +58,10 @@ type SelectedFile = {
   size?: number
 }
 
+type ProjectDirectoryEntry = SelectedFile & {
+  kind: 'file' | 'directory'
+}
+
 type ProjectFileResult = {
   ok: boolean
   content?: string
@@ -70,8 +79,6 @@ type UpdateChatPatch = {
 }
 
 const STATE_VERSION = 1
-const MAX_PROJECT_FILES = 300
-const MAX_SCAN_DEPTH = 5
 const IGNORED_DIRS = new Set([
   '.git',
   'node_modules',
@@ -85,6 +92,30 @@ const IGNORED_DIRS = new Set([
   'test-results'
 ])
 const IGNORED_FILES = new Set(['.DS_Store'])
+const projectWatchers = new Map<
+  number,
+  {
+    projectId: string
+    watcher: FSWatcher
+    timer: ReturnType<typeof setTimeout> | null
+    changedPaths: Set<string>
+  }
+>()
+
+function stopProjectWatcher(senderId: number, projectId?: string): void {
+  const current = projectWatchers.get(senderId)
+  if (!current || (projectId && current.projectId !== projectId)) return
+  if (current.timer) clearTimeout(current.timer)
+  current.watcher.close()
+  projectWatchers.delete(senderId)
+}
+
+function ignoredProjectChange(filename: string | Buffer | null): boolean {
+  if (!filename) return false
+  return String(filename)
+    .split(/[\\/]/)
+    .some((part) => IGNORED_DIRS.has(part) || IGNORED_FILES.has(part))
+}
 
 function stateFile(): string {
   return join(app.getPath('userData'), 'app-state.json')
@@ -116,7 +147,10 @@ function sanitizeMessage(input: unknown): StoredMsg | null {
     system: typeof value.system === 'boolean' ? value.system : undefined,
     engineId: typeof value.engineId === 'string' ? value.engineId : undefined,
     terminalId: typeof value.terminalId === 'string' ? value.terminalId : undefined,
-    terminalRunning: typeof value.terminalRunning === 'boolean' ? value.terminalRunning : undefined
+    terminalRunning: typeof value.terminalRunning === 'boolean' ? value.terminalRunning : undefined,
+    checkpointId: typeof value.checkpointId === 'string' ? value.checkpointId : undefined,
+    durationMs: typeof value.durationMs === 'number' && Number.isFinite(value.durationMs) ? value.durationMs : undefined,
+    interrupted: typeof value.interrupted === 'boolean' ? value.interrupted : undefined
   }
 }
 
@@ -231,10 +265,10 @@ async function resolveProjectFile(projectId: string | undefined, filePath: strin
   return { project, path: abs }
 }
 
-async function listProjectFiles(root: string): Promise<SelectedFile[]> {
+async function searchProjectFiles(root: string, query: string, limit = 40): Promise<SelectedFile[]> {
   const out: SelectedFile[] = []
-  async function walk(dir: string, depth: number): Promise<void> {
-    if (out.length >= MAX_PROJECT_FILES || depth > MAX_SCAN_DEPTH) return
+  async function walk(dir: string): Promise<void> {
+    if (out.length >= limit) return
     let entries
     try {
       entries = await readdir(dir, { withFileTypes: true })
@@ -243,32 +277,95 @@ async function listProjectFiles(root: string): Promise<SelectedFile[]> {
     }
     entries.sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name))
     for (const entry of entries) {
-      if (out.length >= MAX_PROJECT_FILES) return
-      if (entry.name.startsWith('.') && entry.name !== '.env' && entry.name !== '.env.example') {
-        if (entry.isDirectory() || IGNORED_FILES.has(entry.name)) continue
-      }
+      if (out.length >= limit) return
       if (entry.isDirectory() && IGNORED_DIRS.has(entry.name)) continue
       const abs = join(dir, entry.name)
       if (entry.isDirectory()) {
-        await walk(abs, depth + 1)
+        await walk(abs)
         continue
       }
-      if (!entry.isFile() || IGNORED_FILES.has(entry.name)) continue
+      if ((!entry.isFile() && !entry.isSymbolicLink()) || IGNORED_FILES.has(entry.name)) continue
+      const relPath = relative(root, abs)
+      if (!relPath.toLowerCase().includes(query)) continue
       try {
         const info = await stat(abs)
-        if (info.size > 2 * 1024 * 1024) continue
-        out.push({ name: entry.name, path: abs, relPath: relative(root, abs), size: info.size })
+        if (!info.isFile()) continue
+        out.push({ name: entry.name, path: abs, relPath, size: info.size })
       } catch {
-        out.push({ name: entry.name, path: abs, relPath: relative(root, abs) })
+        if (entry.isFile()) out.push({ name: entry.name, path: abs, relPath })
       }
     }
   }
-  await walk(root, 0)
+  await walk(root)
+  return out
+}
+
+async function listProjectDirectory(
+  root: string,
+  relativeDirectory = ''
+): Promise<ProjectDirectoryEntry[]> {
+  const normalizedRoot = resolve(root)
+  const directory = resolve(normalizedRoot, relativeDirectory)
+  if (!isInside(normalizedRoot, directory)) throw new Error('That folder is outside the selected project.')
+  const directoryInfo = await stat(directory)
+  if (!directoryInfo.isDirectory()) throw new Error('That path is not a folder.')
+
+  const entries = await readdir(directory, { withFileTypes: true })
+  entries.sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name))
+  const out: ProjectDirectoryEntry[] = []
+  for (const entry of entries) {
+    if (entry.isDirectory()) {
+      if (IGNORED_DIRS.has(entry.name)) continue
+      const path = join(directory, entry.name)
+      out.push({
+        kind: 'directory',
+        name: entry.name,
+        path,
+        relPath: relative(normalizedRoot, path)
+      })
+      continue
+    }
+    if ((!entry.isFile() && !entry.isSymbolicLink()) || IGNORED_FILES.has(entry.name)) continue
+    const path = join(directory, entry.name)
+    try {
+      const info = await stat(path)
+      if (!info.isFile()) continue
+      out.push({
+        kind: 'file',
+        name: entry.name,
+        path,
+        relPath: relative(normalizedRoot, path),
+        size: info.size
+      })
+    } catch {
+      if (entry.isFile()) {
+        out.push({ kind: 'file', name: entry.name, path, relPath: relative(normalizedRoot, path) })
+      }
+    }
+  }
   return out
 }
 
 export function registerAppStateBricks(): void {
   ipcMain.handle('app:getState', () => loadState())
+
+  ipcMain.handle('app:checkpoint', async (_e, projectId?: string) => {
+    const current = await loadState()
+    const project = projectId
+      ? current.projects.find((p) => p.id === projectId)
+      : current.projects.find((p) => p.id === current.activeProjectId)
+    if (!project) return { ok: false, error: 'Open a project folder first.' }
+    return captureCheckpoint(project.path)
+  })
+
+  ipcMain.handle('app:restoreCheckpoint', async (_e, projectId: string | undefined, checkpointId: string) => {
+    const current = await loadState()
+    const project = projectId
+      ? current.projects.find((p) => p.id === projectId)
+      : current.projects.find((p) => p.id === current.activeProjectId)
+    if (!project) return { ok: false, error: 'Open a project folder first.' }
+    return restoreCheckpoint(project.path, checkpointId)
+  })
 
   ipcMain.handle('app:addProject', async () => {
     const focused = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
@@ -335,13 +432,72 @@ export function registerAppStateBricks(): void {
     return { ok: true, files }
   })
 
-  ipcMain.handle('app:listFiles', async (_e, projectId?: string) => {
+  ipcMain.handle('app:searchFiles', async (_e, projectId: string | undefined, query = '') => {
     const current = await loadState()
-    const project =
-      current.projects.find((p) => p.id === projectId) ??
-      current.projects.find((p) => p.id === current.activeProjectId)
+    const project = projectId
+      ? current.projects.find((p) => p.id === projectId)
+      : current.projects.find((p) => p.id === current.activeProjectId)
     if (!project) return { ok: false, files: [], error: 'Open a project folder first.' }
-    return { ok: true, files: await listProjectFiles(project.path) }
+    return { ok: true, files: await searchProjectFiles(project.path, query.trim().toLowerCase()) }
+  })
+
+  ipcMain.handle('app:listDirectory', async (_e, projectId: string | undefined, directory = '') => {
+    const current = await loadState()
+    const project = projectId
+      ? current.projects.find((p) => p.id === projectId)
+      : current.projects.find((p) => p.id === current.activeProjectId)
+    if (!project) return { ok: false, entries: [], error: 'Open a project folder first.' }
+    try {
+      return { ok: true, entries: await listProjectDirectory(project.path, directory) }
+    } catch (err) {
+      return { ok: false, entries: [], error: err instanceof Error ? err.message : 'Could not list folder.' }
+    }
+  })
+
+  ipcMain.handle('app:watchFiles', async (event, projectId?: string) => {
+    const current = await loadState()
+    const project = projectId
+      ? current.projects.find((p) => p.id === projectId)
+      : current.projects.find((p) => p.id === current.activeProjectId)
+    if (!project) return { ok: false, error: 'Open a project folder first.' }
+
+    stopProjectWatcher(event.sender.id)
+    try {
+      const entry: {
+        projectId: string
+        watcher: FSWatcher
+        timer: ReturnType<typeof setTimeout> | null
+        changedPaths: Set<string>
+      } = {
+        projectId: project.id,
+        watcher: watch(project.path, { recursive: true }, (_kind, filename) => {
+          if (ignoredProjectChange(filename)) return
+          entry.changedPaths.add(filename ? String(filename).replace(/\\/g, '/') : '')
+          if (entry.timer) clearTimeout(entry.timer)
+          entry.timer = setTimeout(() => {
+            entry.timer = null
+            if (!event.sender.isDestroyed()) {
+              const paths = [...entry.changedPaths]
+              entry.changedPaths.clear()
+              event.sender.send('app:filesChanged', { projectId: project.id, paths })
+            }
+          }, 180)
+        }),
+        timer: null,
+        changedPaths: new Set()
+      }
+      entry.watcher.on('error', () => stopProjectWatcher(event.sender.id, project.id))
+      projectWatchers.set(event.sender.id, entry)
+      event.sender.once('destroyed', () => stopProjectWatcher(event.sender.id))
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : 'Could not watch project files.' }
+    }
+  })
+
+  ipcMain.handle('app:unwatchFiles', (event, projectId?: string) => {
+    stopProjectWatcher(event.sender.id, projectId)
+    return { ok: true }
   })
 
   ipcMain.handle('app:readProjectFile', async (_e, projectId: string | undefined, filePath: string): Promise<ProjectFileResult> => {

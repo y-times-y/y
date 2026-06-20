@@ -15,15 +15,6 @@ interface SnapshotResult {
   error?: string
 }
 
-interface DiffResult {
-  ok: boolean
-  dirty?: boolean
-  diff?: string
-  hash?: string
-  count?: number
-  error?: string
-}
-
 interface EngineModelCatalog {
   engine: string
   label: string
@@ -224,6 +215,9 @@ interface AppMsg {
   engineId?: string
   terminalId?: string
   terminalRunning?: boolean
+  checkpointId?: string
+  durationMs?: number
+  interrupted?: boolean
 }
 
 interface AppChat {
@@ -268,6 +262,10 @@ interface SelectedFile {
   size?: number
 }
 
+interface ProjectDirectoryEntry extends SelectedFile {
+  kind: 'file' | 'directory'
+}
+
 interface SelectFilesResult {
   ok: boolean
   canceled?: boolean
@@ -296,7 +294,9 @@ interface YApi {
     compile: () => Promise<CompileResult>
     snapshot: () => Promise<SnapshotResult>
     revert: () => Promise<SnapshotResult>
-    diff: () => Promise<DiffResult>
+    checkpoint: () => Promise<{ ok: boolean; checkpointId?: string; error?: string }>
+    restoreCheckpoint: (checkpointId: string) => Promise<{ ok: boolean; checkpointId?: string; error?: string }>
+    resetToSeed: () => Promise<{ ok: boolean; error?: string }>
     onChanged: (cb: () => void) => () => void
   }
   engine: {
@@ -311,10 +311,16 @@ interface YApi {
   }
   app: {
     getState: () => Promise<AppState>
+    checkpoint: (projectId?: string) => Promise<{ ok: boolean; checkpointId?: string; error?: string }>
+    restoreCheckpoint: (projectId: string | undefined, checkpointId: string) => Promise<{ ok: boolean; checkpointId?: string; error?: string }>
     addProject: () => Promise<AppStateResult>
     createChat: (projectId?: string) => Promise<AppStateResult>
     selectFiles: (projectId?: string) => Promise<SelectFilesResult>
-    listFiles: (projectId?: string) => Promise<{ ok: boolean; files: SelectedFile[]; error?: string }>
+    searchFiles: (projectId: string | undefined, query: string) => Promise<{ ok: boolean; files: SelectedFile[]; error?: string }>
+    listDirectory: (projectId: string | undefined, directory?: string) => Promise<{ ok: boolean; entries: ProjectDirectoryEntry[]; error?: string }>
+    watchFiles: (projectId?: string) => Promise<{ ok: boolean; error?: string }>
+    unwatchFiles: (projectId?: string) => Promise<{ ok: boolean }>
+    onFilesChanged: (cb: (payload: { projectId: string; paths: string[] }) => void) => () => void
     readProjectFile: (projectId: string | undefined, filePath: string) => Promise<ProjectFileResult>
     writeProjectFile: (projectId: string | undefined, filePath: string, content: string) => Promise<ProjectFileResult>
     updateChat: (
@@ -553,6 +559,9 @@ declare global {
     engineId?: string
     terminalId?: string
     terminalRunning?: boolean
+    checkpointId?: string
+    durationMs?: number
+    interrupted?: boolean
   }
 
   interface AppChat {
@@ -595,6 +604,10 @@ declare global {
     path: string
     relPath?: string
     size?: number
+  }
+
+  interface ProjectDirectoryEntry extends SelectedFile {
+    kind: 'file' | 'directory'
   }
 
   interface SelectFilesResult {

@@ -8,83 +8,85 @@ type EngineOptionsPickerProps = {
   className?: string
 }
 
-const CLAUDE_UTILITY_OPTIONS: Array<{ value: NonNullable<EngineRunOptions['claudeUtilityCommand']>; label: string }> = [
-  { value: 'doctor', label: 'Doctor health check' },
-  { value: 'autoModeConfig', label: 'Auto mode config' },
-  { value: 'autoModeDefaults', label: 'Auto mode defaults' },
-  { value: 'autoModeCritique', label: 'Auto mode critique' },
-  { value: 'authStatus', label: 'Auth status' },
-  { value: 'authLogin', label: 'Auth login' },
-  { value: 'authLogout', label: 'Auth logout' },
-  { value: 'setupToken', label: 'Setup token' },
-  { value: 'install', label: 'Install native build' },
-  { value: 'update', label: 'Update Claude Code' },
-  { value: 'projectPurge', label: 'Purge project state' },
-  { value: 'pluginList', label: 'List plugins' },
-  { value: 'pluginDetails', label: 'Plugin details' },
-  { value: 'pluginValidate', label: 'Validate plugin' },
-  { value: 'pluginInstall', label: 'Install plugin' },
-  { value: 'pluginEnable', label: 'Enable plugin' },
-  { value: 'pluginDisable', label: 'Disable plugin' },
-  { value: 'pluginUninstall', label: 'Uninstall plugin' },
-  { value: 'pluginUpdate', label: 'Update plugin' },
-  { value: 'pluginPrune', label: 'Prune plugins' },
-  { value: 'pluginTag', label: 'Tag plugin release' },
-  { value: 'pluginInit', label: 'Create plugin' },
-  { value: 'pluginMarketplaceList', label: 'List marketplaces' },
-  { value: 'pluginMarketplaceAdd', label: 'Add marketplace' },
-  { value: 'pluginMarketplaceRemove', label: 'Remove marketplace' },
-  { value: 'pluginMarketplaceUpdate', label: 'Update marketplace' },
-  { value: 'mcpList', label: 'List MCP servers' },
-  { value: 'mcpGet', label: 'MCP server details' },
-  { value: 'mcpAdd', label: 'Add MCP server' },
-  { value: 'mcpAddJson', label: 'Add MCP from JSON' },
-  { value: 'mcpRemove', label: 'Remove MCP server' },
-  { value: 'mcpServe', label: 'Serve MCP' },
-  { value: 'mcpResetProjectChoices', label: 'Reset MCP project choices' }
+type UtilityOption<T extends string> = { value: T; label: string; group: 'Native' | 'Plugins' | 'MCP' }
+
+const CLAUDE_UTILITY_OPTIONS: Array<UtilityOption<NonNullable<EngineRunOptions['claudeUtilityCommand']>>> = [
+  { value: 'doctor', label: 'Doctor health check', group: 'Native' },
+  { value: 'autoModeConfig', label: 'Auto mode config', group: 'Native' },
+  { value: 'autoModeDefaults', label: 'Auto mode defaults', group: 'Native' },
+  { value: 'autoModeCritique', label: 'Auto mode critique', group: 'Native' },
+  { value: 'authStatus', label: 'Auth status', group: 'Native' },
+  { value: 'authLogin', label: 'Auth login', group: 'Native' },
+  { value: 'authLogout', label: 'Auth logout', group: 'Native' },
+  { value: 'setupToken', label: 'Setup token', group: 'Native' },
+  { value: 'install', label: 'Install native build', group: 'Native' },
+  { value: 'update', label: 'Update Claude Code', group: 'Native' },
+  { value: 'projectPurge', label: 'Purge project state', group: 'Native' },
+  { value: 'pluginList', label: 'List plugins', group: 'Plugins' },
+  { value: 'pluginDetails', label: 'Plugin details', group: 'Plugins' },
+  { value: 'pluginValidate', label: 'Validate plugin', group: 'Plugins' },
+  { value: 'pluginInstall', label: 'Install plugin', group: 'Plugins' },
+  { value: 'pluginEnable', label: 'Enable plugin', group: 'Plugins' },
+  { value: 'pluginDisable', label: 'Disable plugin', group: 'Plugins' },
+  { value: 'pluginUninstall', label: 'Uninstall plugin', group: 'Plugins' },
+  { value: 'pluginUpdate', label: 'Update plugin', group: 'Plugins' },
+  { value: 'pluginPrune', label: 'Prune plugins', group: 'Plugins' },
+  { value: 'pluginTag', label: 'Tag plugin release', group: 'Plugins' },
+  { value: 'pluginInit', label: 'Create plugin', group: 'Plugins' },
+  { value: 'pluginMarketplaceList', label: 'List marketplaces', group: 'Plugins' },
+  { value: 'pluginMarketplaceAdd', label: 'Add marketplace', group: 'Plugins' },
+  { value: 'pluginMarketplaceRemove', label: 'Remove marketplace', group: 'Plugins' },
+  { value: 'pluginMarketplaceUpdate', label: 'Update marketplace', group: 'Plugins' },
+  { value: 'mcpList', label: 'List MCP servers', group: 'MCP' },
+  { value: 'mcpGet', label: 'MCP server details', group: 'MCP' },
+  { value: 'mcpAdd', label: 'Add MCP server', group: 'MCP' },
+  { value: 'mcpAddJson', label: 'Add MCP from JSON', group: 'MCP' },
+  { value: 'mcpRemove', label: 'Remove MCP server', group: 'MCP' },
+  { value: 'mcpServe', label: 'Serve MCP', group: 'MCP' },
+  { value: 'mcpResetProjectChoices', label: 'Reset MCP project choices', group: 'MCP' }
 ]
 
-const CODEX_UTILITY_OPTIONS: Array<{ value: NonNullable<EngineRunOptions['codexUtilityCommand']>; label: string }> = [
-  { value: 'loginStatus', label: 'Login status' },
-  { value: 'login', label: 'Login' },
-  { value: 'logout', label: 'Logout' },
-  { value: 'doctor', label: 'Doctor health check' },
-  { value: 'pluginList', label: 'List plugins' },
-  { value: 'pluginAdd', label: 'Install plugin' },
-  { value: 'pluginRemove', label: 'Remove plugin' },
-  { value: 'mcpList', label: 'List MCP servers' },
-  { value: 'mcpGet', label: 'MCP server details' },
-  { value: 'mcpAdd', label: 'Add MCP server' },
-  { value: 'mcpRemove', label: 'Remove MCP server' },
-  { value: 'mcpLogin', label: 'MCP login' },
-  { value: 'mcpLogout', label: 'MCP logout' },
-  { value: 'pluginMarketplaceList', label: 'List plugin marketplaces' },
-  { value: 'pluginMarketplaceAdd', label: 'Add plugin marketplace' },
-  { value: 'pluginMarketplaceRemove', label: 'Remove plugin marketplace' },
-  { value: 'pluginMarketplaceUpdate', label: 'Update plugin marketplace' },
-  { value: 'completion', label: 'Shell completions' },
-  { value: 'update', label: 'Update Codex' },
-  { value: 'debugModels', label: 'Debug models' },
-  { value: 'featuresList', label: 'Feature flags' },
-  { value: 'featuresEnable', label: 'Enable feature' },
-  { value: 'featuresDisable', label: 'Disable feature' },
-  { value: 'cloudList', label: 'Cloud task list' },
-  { value: 'cloudStatus', label: 'Cloud task status' },
-  { value: 'cloudApply', label: 'Cloud task apply' },
-  { value: 'cloudDiff', label: 'Cloud task diff' },
-  { value: 'cloudExec', label: 'Cloud task exec' },
-  { value: 'apply', label: 'Apply cloud diff' },
-  { value: 'resume', label: 'Resume interactive session' },
-  { value: 'fork', label: 'Fork interactive session' },
-  { value: 'mcpServer', label: 'Start MCP server' },
-  { value: 'appServer', label: 'App server' },
-  { value: 'app', label: 'Open Codex app' },
-  { value: 'execServer', label: 'Exec server' },
-  { value: 'sandboxMacos', label: 'macOS sandbox' },
-  { value: 'sandboxLinux', label: 'Linux sandbox' },
-  { value: 'sandboxWindows', label: 'Windows sandbox' },
-  { value: 'debugAppServer', label: 'Debug app server' },
-  { value: 'debugPromptInput', label: 'Debug prompt input' }
+const CODEX_UTILITY_OPTIONS: Array<UtilityOption<NonNullable<EngineRunOptions['codexUtilityCommand']>>> = [
+  { value: 'loginStatus', label: 'Login status', group: 'Native' },
+  { value: 'login', label: 'Login', group: 'Native' },
+  { value: 'logout', label: 'Logout', group: 'Native' },
+  { value: 'doctor', label: 'Doctor health check', group: 'Native' },
+  { value: 'completion', label: 'Shell completions', group: 'Native' },
+  { value: 'update', label: 'Update Codex', group: 'Native' },
+  { value: 'debugModels', label: 'Debug models', group: 'Native' },
+  { value: 'featuresList', label: 'Feature flags', group: 'Native' },
+  { value: 'featuresEnable', label: 'Enable feature', group: 'Native' },
+  { value: 'featuresDisable', label: 'Disable feature', group: 'Native' },
+  { value: 'cloudList', label: 'Cloud task list', group: 'Native' },
+  { value: 'cloudStatus', label: 'Cloud task status', group: 'Native' },
+  { value: 'cloudApply', label: 'Cloud task apply', group: 'Native' },
+  { value: 'cloudDiff', label: 'Cloud task diff', group: 'Native' },
+  { value: 'cloudExec', label: 'Cloud task exec', group: 'Native' },
+  { value: 'apply', label: 'Apply cloud diff', group: 'Native' },
+  { value: 'resume', label: 'Resume interactive session', group: 'Native' },
+  { value: 'fork', label: 'Fork interactive session', group: 'Native' },
+  { value: 'appServer', label: 'App server', group: 'Native' },
+  { value: 'app', label: 'Open Codex app', group: 'Native' },
+  { value: 'execServer', label: 'Exec server', group: 'Native' },
+  { value: 'sandboxMacos', label: 'macOS sandbox', group: 'Native' },
+  { value: 'sandboxLinux', label: 'Linux sandbox', group: 'Native' },
+  { value: 'sandboxWindows', label: 'Windows sandbox', group: 'Native' },
+  { value: 'debugAppServer', label: 'Debug app server', group: 'Native' },
+  { value: 'debugPromptInput', label: 'Debug prompt input', group: 'Native' },
+  { value: 'pluginList', label: 'List plugins', group: 'Plugins' },
+  { value: 'pluginAdd', label: 'Install plugin', group: 'Plugins' },
+  { value: 'pluginRemove', label: 'Remove plugin', group: 'Plugins' },
+  { value: 'pluginMarketplaceList', label: 'List plugin marketplaces', group: 'Plugins' },
+  { value: 'pluginMarketplaceAdd', label: 'Add plugin marketplace', group: 'Plugins' },
+  { value: 'pluginMarketplaceRemove', label: 'Remove plugin marketplace', group: 'Plugins' },
+  { value: 'pluginMarketplaceUpdate', label: 'Update plugin marketplace', group: 'Plugins' },
+  { value: 'mcpList', label: 'List MCP servers', group: 'MCP' },
+  { value: 'mcpGet', label: 'MCP server details', group: 'MCP' },
+  { value: 'mcpAdd', label: 'Add MCP server', group: 'MCP' },
+  { value: 'mcpRemove', label: 'Remove MCP server', group: 'MCP' },
+  { value: 'mcpLogin', label: 'MCP login', group: 'MCP' },
+  { value: 'mcpLogout', label: 'MCP logout', group: 'MCP' },
+  { value: 'mcpServer', label: 'Start MCP server', group: 'MCP' }
 ]
 
 const CLAUDE_TARGET_COMMANDS = new Set<NonNullable<EngineRunOptions['claudeUtilityCommand']>>([
@@ -180,13 +182,24 @@ function optionCount(engineId: string, options: EngineRunOptions): number {
 }
 
 export function defaultRunOptions(): EngineRunOptions {
-  return {
-    claudePermissionMode: 'default',
-    claudeToolMode: 'safe',
-    claudeDangerouslySkipPermissions: true,
-    codexAskForApproval: 'never',
-    codexDangerouslyBypassApprovalsAndSandbox: true
-  }
+  return {}
+}
+
+function renderUtilityOptions<T extends string>(items: Array<UtilityOption<T>>): React.ReactNode {
+  const groups: Array<UtilityOption<T>['group']> = ['Native', 'Plugins', 'MCP']
+  return groups.map((group) => {
+    const groupItems = items.filter((item) => item.group === group)
+    if (!groupItems.length) return null
+    return (
+      <optgroup key={group} label={group}>
+        {groupItems.map((item) => (
+          <option key={item.value} value={item.value}>
+            {item.label}
+          </option>
+        ))}
+      </optgroup>
+    )
+  })
 }
 
 function Row({
@@ -294,20 +307,16 @@ export function EngineOptionsPicker({
                 </select>
               </Row>
 
-              {value.claudeCommand === 'utility' ? (
-                <>
-                  <Row title="Utility">
+	              {value.claudeCommand === 'utility' ? (
+	                <>
+	                  <Row title="Utility">
                     <select
                       value={value.claudeUtilityCommand ?? 'doctor'}
                       onChange={(e) =>
                         patch({ claudeUtilityCommand: e.target.value as EngineRunOptions['claudeUtilityCommand'] })
                       }
                     >
-                      {CLAUDE_UTILITY_OPTIONS.map((item) => (
-                        <option key={item.value} value={item.value}>
-                          {item.label}
-                        </option>
-                      ))}
+                      {renderUtilityOptions(CLAUDE_UTILITY_OPTIONS)}
                     </select>
                   </Row>
                   {CLAUDE_TARGET_COMMANDS.has(value.claudeUtilityCommand ?? 'doctor') ? (
@@ -414,18 +423,14 @@ export function EngineOptionsPicker({
                 </select>
               </Row>
 
-              {value.codexCommand === 'utility' ? (
-                <>
-                  <Row title="Utility">
+	              {value.codexCommand === 'utility' ? (
+	                <>
+	                  <Row title="Utility">
                     <select
                       value={value.codexUtilityCommand ?? 'loginStatus'}
                       onChange={(e) => patch({ codexUtilityCommand: e.target.value as EngineRunOptions['codexUtilityCommand'] })}
                     >
-                      {CODEX_UTILITY_OPTIONS.map((item) => (
-                        <option key={item.value} value={item.value}>
-                          {item.label}
-                        </option>
-                      ))}
+                      {renderUtilityOptions(CODEX_UTILITY_OPTIONS)}
                     </select>
                   </Row>
                   <Row title="Target">

@@ -41,6 +41,9 @@ interface ClaudeLine {
       name?: string
       id?: string
       input?: Record<string, unknown>
+      tool_use_id?: string
+      content?: string | Array<{ type?: string; text?: string }>
+      is_error?: boolean
     }>
   }
 }
@@ -130,6 +133,22 @@ function safeToolSet(mode: StartOpts['mode']): string {
   return mode === 'write' ? 'Read,Glob,Grep,Edit,Write' : 'Read,Glob,Grep'
 }
 
+function commandSource(name: string): string {
+  const bare = name.replace(/^\//, '')
+  const colon = bare.indexOf(':')
+  return colon > 0 ? bare.slice(0, colon) : 'Claude'
+}
+
+function commandItems(names: unknown): Array<{ name: string; source?: string }> {
+  if (!Array.isArray(names)) return []
+  return names
+    .filter((name): name is string => typeof name === 'string' && name.trim().length > 0)
+    .map((raw) => {
+      const name = raw.startsWith('/') ? raw : `/${raw}`
+      return { name, source: commandSource(name) }
+    })
+}
+
 function claudeUtilityCommandArgs(command: string): string[] | null {
   switch (command) {
     case 'doctor':
@@ -209,8 +228,10 @@ class ClaudeSession implements Session {
   private cancelled = false
   private streamedText = false // did we already stream deltas this turn?
   private pendingResult: Extract<AgentEvent, { kind: 'result' }> | null = null
+  private pendingSteer: string | null = null
   private blocks = new Map<number, ToolBlock>() // in-flight tool_use blocks by index
   private streamedToolIds = new Set<string>() // IDs of tools finalized via streaming
+  private toolPresentations = new Map<string, { name: string; presentation: ToolPresentation }>()
 
   constructor(
     private opts: StartOpts,
@@ -247,10 +268,9 @@ class ClaudeSession implements Session {
     this.blocks.clear()
     this.streamedToolIds.clear()
 
-    // Safe mode means "use the tools appropriate for the Kernel-selected mode".
-    // Main chat now runs in write mode; Modify also runs in write mode but with
-    // its cwd pinned by the Kernel.
-    const toolMode = this.opts.options?.claudeToolMode ?? 'safe'
+    // Native main chat leaves tool selection to Claude Code. Kernel-scoped
+    // surfaces opt into safe/custom modes explicitly.
+    const toolMode = this.opts.options?.claudeToolMode ?? (this.opts.mode === 'native' ? undefined : 'safe')
     const safeTools = safeToolSet(this.opts.mode)
     const requestedTools = trimValue(this.opts.options?.claudeTools)
     const args = [
@@ -263,7 +283,7 @@ class ClaudeSession implements Session {
     ]
     if (toolMode === 'default') {
       args.push('--tools', 'default')
-    } else {
+    } else if (toolMode) {
       const tools = toolMode === 'custom' && requestedTools ? requestedTools : safeTools
       args.push('--tools', tools)
       if (toolMode === 'safe') args.push('--allowedTools', tools)
@@ -406,10 +426,15 @@ class ClaudeSession implements Session {
 
     child.on('close', (code) => {
       const wasCancelled = this.cancelled
+      const pendingSteer = this.pendingSteer
       this.cancelled = false
+      this.pendingSteer = null
       this.child = null
       this.blocks.clear()
-      if (wasCancelled) return
+      if (wasCancelled) {
+        if (pendingSteer) this.send(pendingSteer)
+        return
+      }
       if (this.pendingResult) {
         const result = this.pendingResult
         this.pendingResult = null
@@ -422,7 +447,13 @@ class ClaudeSession implements Session {
 
   command(command: EngineCommand): EngineCommandResult {
     if (command.name === 'steer') {
-      return { ok: false, error: 'Claude Code steering needs a live interactive session; this chat will queue it as a follow-up.' }
+      const text = command.value.trim()
+      if (!text) return { ok: false, error: 'Steering text is required.' }
+      if (!this.child) return { ok: false, error: 'No Claude turn is currently running.' }
+      this.pendingSteer = text
+      this.cancelled = true
+      this.child.kill('SIGTERM')
+      return { ok: true, message: 'Steering Claude after the completed tool call.' }
     }
     if (this.child) return { ok: false, error: 'A turn is already running.' }
     if (command.name === 'compact') {
@@ -722,6 +753,7 @@ class ClaudeSession implements Session {
   }
 
   cancel(): void {
+    this.pendingSteer = null
     if (this.child) this.cancelled = true
     this.child?.kill('SIGTERM')
     this.child = null
@@ -746,9 +778,7 @@ class ClaudeSession implements Session {
           if (Array.isArray(obj.slash_commands)) {
             this.emit({
               kind: 'commands',
-              commands: obj.slash_commands
-                .filter((name): name is string => typeof name === 'string' && name.trim().length > 0)
-                .map((name) => ({ name: name.startsWith('/') ? name : `/${name}`, source: 'Claude' }))
+              commands: commandItems(obj.slash_commands)
             })
           }
         } else if (obj.subtype === 'status' && obj.status) {
@@ -789,6 +819,9 @@ class ClaudeSession implements Session {
         // complete input even when stream-json redacts thinking or we miss deltas.
         this.emitAssistantTools(obj.message)
         if (!this.streamedText) this.emitAssistantText(obj.message)
+        break
+      case 'user':
+        this.emitToolResults(obj.message)
         break
       case 'prompt_suggestion': {
         const suggestion = obj.text || obj.prompt || obj.suggestion
@@ -847,7 +880,33 @@ class ClaudeSession implements Session {
     phase: 'start' | 'update' | 'end',
     presentation: ToolPresentation
   ): void {
+    if (id) this.toolPresentations.set(id, { name, presentation })
     this.emit({ kind: 'tool', name, id, phase, ...presentation })
+  }
+
+  private emitToolResults(message: ClaudeLine['message']): void {
+    const content = message?.content
+    if (!Array.isArray(content)) return
+    for (const block of content) {
+      if (block?.type !== 'tool_result' || !block.tool_use_id) continue
+      const previous = this.toolPresentations.get(block.tool_use_id)
+      if (!previous) continue
+      const verb = previous.presentation.verb.toLowerCase()
+      if (verb === 'edit' || verb === 'write') continue
+      const body = typeof block.content === 'string'
+        ? block.content
+        : Array.isArray(block.content)
+          ? block.content.map((part) => part?.text).filter((text): text is string => typeof text === 'string').join('\n')
+          : undefined
+      this.emit({
+        kind: 'tool',
+        name: previous.name,
+        id: block.tool_use_id,
+        phase: 'end',
+        ...previous.presentation,
+        body: body?.trim() || (block.is_error ? 'Tool failed.' : undefined)
+      })
+    }
   }
 
   private updateToolInput(index: number, chunk: string, phase: 'update' | 'end'): void {

@@ -6,9 +6,10 @@ type XtermTerminalProps = {
   id: string
   running: boolean
   initialText?: string
+  fontSize?: number
 }
 
-function XtermTerminal({ id, running, initialText }: XtermTerminalProps): React.JSX.Element {
+function XtermTerminal({ id, running, initialText, fontSize = 12 }: XtermTerminalProps): React.JSX.Element {
   const hostRef = React.useRef<HTMLDivElement | null>(null)
   const termRef = React.useRef<Terminal | null>(null)
   const fitRef = React.useRef<FitAddon | null>(null)
@@ -26,7 +27,7 @@ function XtermTerminal({ id, running, initialText }: XtermTerminalProps): React.
       cursorBlink: true,
       convertEol: true,
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-      fontSize: 12,
+      fontSize,
       lineHeight: 1.35,
       scrollback: 5000,
       theme: {
@@ -74,8 +75,20 @@ function XtermTerminal({ id, running, initialText }: XtermTerminalProps): React.
       if (runningRef.current && window.y.terminal) void window.y.terminal.write(id, data)
     })
     const off = window.y.terminal?.onEvent((event) => {
-      if (event.id !== id || event.kind !== 'data') return
-      term.write(event.data ?? '')
+      if (event.id !== id) return
+      if (event.kind === 'data') {
+        term.write(event.data ?? '')
+        return
+      }
+      if (event.kind === 'exit') {
+        runningRef.current = false
+        term.write(`\r\n[process exited${typeof event.exitCode === 'number' ? ` with code ${event.exitCode}` : ''}]\r\n`)
+        return
+      }
+      if (event.kind === 'error') {
+        runningRef.current = false
+        term.write(`\r\n[terminal error: ${event.message}]\r\n`)
+      }
     })
     if (initialText) {
       lastInitialRef.current = initialText
@@ -94,12 +107,24 @@ function XtermTerminal({ id, running, initialText }: XtermTerminalProps): React.
 
   React.useEffect(() => {
     const term = termRef.current
+    if (!term) return
+    term.options.fontSize = fontSize
+    try {
+      fitRef.current?.fit()
+      if (window.y.terminal) void window.y.terminal.resize(id, term.cols, term.rows)
+    } catch {
+      // The terminal may be collapsed while this setting changes.
+    }
+  }, [fontSize, id])
+
+  React.useEffect(() => {
+    const term = termRef.current
     if (!term || !initialText || initialText === lastInitialRef.current) return
     lastInitialRef.current = initialText
     term.write(initialText)
   }, [initialText])
 
-  return <div className="y-xterm" ref={hostRef} />
+  return <div className="y-xterm" ref={hostRef} onWheel={(event) => event.stopPropagation()} />
 }
 
 export default XtermTerminal

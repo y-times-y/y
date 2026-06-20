@@ -212,6 +212,9 @@ type AppMsg = {
   engineId?: string
   terminalId?: string
   terminalRunning?: boolean
+  checkpointId?: string
+  durationMs?: number
+  interrupted?: boolean
 }
 
 type AppChat = {
@@ -249,6 +252,10 @@ type SelectedFile = {
   size?: number
 }
 
+type ProjectDirectoryEntry = SelectedFile & {
+  kind: 'file' | 'directory'
+}
+
 type ProjectFileResult = {
   ok: boolean
   content?: string
@@ -277,15 +284,12 @@ const y = {
       ipcRenderer.invoke('userland:snapshot'),
     revert: (): Promise<{ ok: boolean; hash?: string; count?: number; error?: string }> =>
       ipcRenderer.invoke('userland:revert'),
-    // The pending change since the last snapshot (for the Keep/Discard gate).
-    diff: (): Promise<{
-      ok: boolean
-      dirty?: boolean
-      diff?: string
-      hash?: string
-      count?: number
-      error?: string
-    }> => ipcRenderer.invoke('userland:diff'),
+    checkpoint: (): Promise<{ ok: boolean; checkpointId?: string; error?: string }> =>
+      ipcRenderer.invoke('userland:checkpoint'),
+    restoreCheckpoint: (checkpointId: string): Promise<{ ok: boolean; checkpointId?: string; error?: string }> =>
+      ipcRenderer.invoke('userland:restoreCheckpoint', checkpointId),
+    resetToSeed: (): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke('userland:resetToSeed'),
     // Subscribe to live disk changes; returns an unsubscribe function.
     onChanged: (cb: () => void): (() => void) => {
       const listener = (): void => cb()
@@ -320,6 +324,10 @@ const y = {
   // update state, but native folder access and persistence stay in main.
   app: {
     getState: (): Promise<AppState> => ipcRenderer.invoke('app:getState'),
+    checkpoint: (projectId?: string): Promise<{ ok: boolean; checkpointId?: string; error?: string }> =>
+      ipcRenderer.invoke('app:checkpoint', projectId),
+    restoreCheckpoint: (projectId: string | undefined, checkpointId: string): Promise<{ ok: boolean; checkpointId?: string; error?: string }> =>
+      ipcRenderer.invoke('app:restoreCheckpoint', projectId, checkpointId),
     addProject: (): Promise<{ ok: boolean; canceled?: boolean; state?: AppState; error?: string }> =>
       ipcRenderer.invoke('app:addProject'),
     createChat: (
@@ -330,10 +338,25 @@ const y = {
       projectId?: string
     ): Promise<{ ok: boolean; canceled?: boolean; files: SelectedFile[]; error?: string }> =>
       ipcRenderer.invoke('app:selectFiles', projectId),
-    listFiles: (
-      projectId?: string
+    searchFiles: (
+      projectId: string | undefined,
+      query: string
     ): Promise<{ ok: boolean; files: SelectedFile[]; error?: string }> =>
-      ipcRenderer.invoke('app:listFiles', projectId),
+      ipcRenderer.invoke('app:searchFiles', projectId, query),
+    listDirectory: (
+      projectId: string | undefined,
+      directory?: string
+    ): Promise<{ ok: boolean; entries: ProjectDirectoryEntry[]; error?: string }> =>
+      ipcRenderer.invoke('app:listDirectory', projectId, directory),
+    watchFiles: (projectId?: string): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke('app:watchFiles', projectId),
+    unwatchFiles: (projectId?: string): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('app:unwatchFiles', projectId),
+    onFilesChanged: (cb: (payload: { projectId: string; paths: string[] }) => void): (() => void) => {
+      const listener = (_e: unknown, payload: { projectId: string; paths: string[] }): void => cb(payload)
+      ipcRenderer.on('app:filesChanged', listener)
+      return () => ipcRenderer.removeListener('app:filesChanged', listener)
+    },
     readProjectFile: (
       projectId: string | undefined,
       filePath: string
