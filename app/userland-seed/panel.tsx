@@ -4652,22 +4652,19 @@ export default function Chat() {
         .y-drop-item:hover { background: rgba(255,255,255,0.06); color: var(--y-text); }
         .y-drop-item.active { background: rgba(255,255,255,0.08); color: var(--y-text); }
         .y-onboarding {
-          flex: 1;
-          min-height: 0;
+          position: fixed;
+          inset: 0;
+          z-index: 9999;
           display: grid;
           place-items: center;
-          padding: 34px 24px 40px;
+          background: #0b0f18;
+          padding: 48px 24px;
           overflow: auto;
         }
         .y-onboarding-card {
           width: min(920px, 100%);
-          border: 1px solid var(--y-border-strong);
-          border-radius: 26px;
-          background:
-            radial-gradient(circle at 12% 0%, rgba(80,125,185,0.18), transparent 34%),
-            linear-gradient(180deg, rgba(255,255,255,0.055), rgba(255,255,255,0.025));
-          box-shadow: 0 28px 90px rgba(0,0,0,0.36);
-          padding: 28px;
+          background: transparent;
+          padding: 0;
         }
         .y-onboarding-brand {
           display: flex;
