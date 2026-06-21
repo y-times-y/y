@@ -1390,6 +1390,7 @@ function OnboardingView({
                 </div>
                 {!tool.authenticated ? (
                   <>
+                    <p className="y-cli-hint">Copy this, then paste it into your Mac's Terminal app and press Enter.</p>
                     <code>{!tool.installed ? tool.installCommand : tool.authCommand}</code>
                     <button type="button" className="y-onboarding-secondary" onClick={() => void copyCommand(!tool.installed ? tool.installCommand : tool.authCommand, tool.label)}>
                       {copied === tool.label ? 'Copied' : !tool.installed ? 'Copy install' : 'Copy login'}
@@ -4709,6 +4710,11 @@ export default function Chat() {
           flex-shrink: 0;
           background: rgba(74,222,128,0.18);
           color: #4ade80;
+        }
+        .y-cli-hint {
+          margin: -4px 0 0;
+          font-size: 11px;
+          color: var(--y-text-2);
         }
         .y-cli-card code {
           display: block;
