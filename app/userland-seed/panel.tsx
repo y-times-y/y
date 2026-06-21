@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ClipboardEvent, type CSSProperties, type DragEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type CSSProperties, type DragEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import XtermTerminal from '@renderer/kernel/XtermTerminal'
 import {
   CHAT_SURFACE_CLASSES,
@@ -1136,6 +1136,12 @@ function EngineMark({ id, logoUrl, size = 18 }: { id: string; logoUrl?: string; 
   if (logoUrl) {
     return <img src={logoUrl} alt="" aria-hidden style={s} draggable={false} />
   }
+  if (id === 'claude-code')
+    return (
+      <svg aria-hidden style={{ ...s, color: '#D97757' }} viewBox="0 0 24 24" fill="none">
+        <path d="M12 2l2.4 6.4H21l-5.4 3.9 2.1 6.4L12 14.8l-5.7 3.9 2.1-6.4L3 8.4h6.6L12 2z" fill="currentColor" opacity="0.9" />
+      </svg>
+    )
   return (
     <span
       aria-hidden
@@ -1146,11 +1152,11 @@ function EngineMark({ id, logoUrl, size = 18 }: { id: string; logoUrl?: string; 
         justifyContent: 'center',
         fontSize: Math.max(8, size * 0.45),
         fontWeight: 700,
-        color: id === 'codex' ? '#10a37f' : '#D97757',
+        color: '#10a37f',
         background: 'rgba(255,255,255,0.06)'
       }}
     >
-      {id === 'codex' ? 'O' : 'C'}
+      O
     </span>
   )
 }
@@ -1279,6 +1285,30 @@ function SettingsView({
   )
 }
 
+function BinaryRain(): React.JSX.Element {
+  const cols = useMemo(
+    () =>
+      Array.from({ length: 32 }, (_, i) => {
+        const dur = 14
+        const delay = -(Math.random() * dur)
+        const half = Array.from({ length: 60 }, () => (Math.random() > 0.5 ? '1' : '0'))
+        return { id: i, dur, delay, bits: [...half, ...half] }
+      }),
+    []
+  )
+  return (
+    <div className="y-bin-rain" aria-hidden="true">
+      {cols.map((col) => (
+        <div key={col.id} className="y-bin-col" style={{ left: `${(col.id / (cols.length - 1)) * 100}%`, animationDuration: `${col.dur}s`, animationDelay: `${col.delay}s`, animationDirection: col.id % 2 === 0 ? 'normal' : 'reverse' }}>
+          {col.bits.map((b, j) => (
+            <span key={j}>{b}</span>
+          ))}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function OnboardingView({
   catalog,
   onFinish,
@@ -1297,7 +1327,7 @@ function OnboardingView({
   const [cliResult, setCliResult] = useState<OnboardingCliCheckResult | null>(null)
   const [checking, setChecking] = useState(false)
   const [copied, setCopied] = useState('')
-  const steps = ['Account', 'Agents', 'Guide']
+  const steps = ['Account', 'Agents']
 
   useEffect(() => {
     trackEvent('onboarding_viewed')
@@ -1419,7 +1449,9 @@ function OnboardingView({
             </button>
           </div>
         </div>
-        <div className="y-login-right" aria-hidden="true" />
+        <div className="y-login-right" aria-hidden="true">
+          <BinaryRain />
+        </div>
       </div>
     )
   }
@@ -1499,31 +1531,23 @@ function OnboardingView({
           </section>
         ) : null}
 
-        {step === 2 ? (
-          <section className="y-onboarding-panel">
-            <h2>How y works</h2>
-            <div className="y-guide-grid">
-              <div><strong>Chat first</strong><span>Open a folder, ask questions, and let <span className="y-guide-engines"><EngineMark id="claude-code" logoUrl={engineLogoFor('claude-code', catalog)} size={14} />Claude Code <EngineMark id="codex" logoUrl={engineLogoFor('codex', catalog)} size={14} />Codex</span> work in the main composer.</span></div>
-              <div><strong>Modify safely</strong><span>Use Modify to reshape only Userland. The protected Kernel keeps recovery, auth, and safety rails alive.</span></div>
-              <div><strong>Review changes</strong><span>Tool calls, edited files, undo, and the revert graph stay visible so changes are auditable.</span></div>
-              <div><strong>Native commands</strong><span>/mcp, /plugins, terminal sessions, and engine auth remain delegated to the real CLIs.</span></div>
-            </div>
-            <div className="y-onboarding-actions">
-              <button type="button" className="y-onboarding-secondary" onClick={onOpenProject}>Open folder</button>
-              <button type="button" className="y-onboarding-primary" onClick={complete}>Start using y</button>
-            </div>
-          </section>
-        ) : null}
+
 
         <div className="y-onboarding-footer">
           <button type="button" className="y-onboarding-secondary" onClick={() => setStep(Math.max(0, step - 1))} disabled={step === 0}>Back</button>
-          {step < 2 ? (
+          {step === 0 ? (
             <button type="button" className="y-onboarding-primary" onClick={() => {
               trackEvent('onboarding_step_completed', { step: steps[step] })
               setStep(step + 1)
             }}>
               Continue
             </button>
+          ) : null}
+          {step === 1 ? (
+            <div className="y-onboarding-footer-end">
+              <button type="button" className="y-onboarding-secondary" onClick={onOpenProject}>Open folder</button>
+              <button type="button" className="y-onboarding-primary" onClick={complete}>Start using y</button>
+            </div>
           ) : null}
         </div>
       </div>
@@ -4809,6 +4833,7 @@ export default function Chat() {
           gap: 14px;
         }
         .y-onboarding-footer { margin-top: 18px; }
+        .y-onboarding-footer-end { display: flex; gap: 8px; margin-left: auto; }
         .y-onboarding-primary,
         .y-onboarding-secondary {
           height: 34px;
@@ -5041,27 +5066,26 @@ export default function Chat() {
         }
         .y-bin-rain {
           position: absolute;
-          inset: 0;
+          inset: 0 0 0 12px;
           font-family: 'SF Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
           font-size: 13px;
-          color: rgba(255,255,255,0.28);
+          color: rgba(255,255,255,0.55);
           overflow: hidden;
           pointer-events: none;
         }
         .y-bin-col {
           position: absolute;
-          bottom: 100%;
-          display: flex;
-          flex-direction: column;
-          line-height: 1.9;
+          top: 0;
           animation: y-bin-fall linear infinite;
-          white-space: nowrap;
+          will-change: transform;
         }
-        .y-bin-col span:nth-child(3n+1) { color: rgba(255,255,255,0.55); }
-        .y-bin-col span:nth-child(5n+2) { color: rgba(180,215,255,0.38); }
-        .y-bin-col span:nth-child(11n+1) { color: rgba(255,255,255,0.82); }
+        .y-bin-col span {
+          display: block;
+          line-height: 1.3;
+        }
         @keyframes y-bin-fall {
-          to { transform: translateY(calc(100vh + 100%)); }
+          from { transform: translateY(-50%); }
+          to   { transform: translateY(0%); }
         }
 
       `}</style>
