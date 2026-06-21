@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type CSSProperties, type DragEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useRef, useState, type ClipboardEvent, type CSSProperties, type DragEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import XtermTerminal from '@renderer/kernel/XtermTerminal'
 import {
   CHAT_SURFACE_CLASSES,
@@ -118,6 +118,7 @@ type OnboardingCliToolStatus = {
   command: string
   installed: boolean
   version?: string
+  authenticated: boolean
   installCommand: string
   authCommand: string
   docsUrl: string
@@ -147,7 +148,6 @@ const MAX_PASTED_ATTACHMENT_BYTES = 120 * 1024
 const MAX_TOTAL_PASTED_ATTACHMENT_BYTES = 240 * 1024
 const COMPOSER_MAX_HEIGHT = 164
 const ONBOARDING_DONE_KEY = 'y.onboarding.done'
-const ONBOARDING_AUTH_KEY = 'y.onboarding.auth'
 const ANALYTICS_ENABLED_KEY = 'y.analytics.enabled'
 
 function analyticsEnabled(): boolean {
@@ -1257,6 +1257,7 @@ function SettingsView({
   onSoundEnabled,
   engines,
   catalog,
+  cliStatus,
   onResetOriginalApp,
   onOpenPlugins,
   onOpenMcp,
@@ -1267,6 +1268,7 @@ function SettingsView({
   onSoundEnabled: (enabled: boolean) => void
   engines: string[]
   catalog: EngineModelCatalog[]
+  cliStatus: OnboardingCliCheckResult | null
   onResetOriginalApp: () => void
   onOpenPlugins: (engineId: string) => void
   onOpenMcp: (engineId: string) => void
@@ -1277,34 +1279,10 @@ function SettingsView({
     <div className="y-settings-view" data-testid="settings-view">
       <div className="y-settings-content">
         <section className="y-settings-section"><h2>General</h2><div className="y-settings-card"><div><strong>Completion sound</strong><p>Play a subtle sound when a long-running agent turn finishes.</p></div><SettingsToggle checked={soundEnabled} onChange={onSoundEnabled} /></div></section>
-        <section className="y-settings-section"><h2>Agents</h2><p className="y-settings-lead">Run native health checks without y changing the CLI configuration.</p><div className="y-agent-grid">{engines.map((engine) => { const entry = catalog.find((item) => item.engine === engine); const label = entry?.label || LABELS[engine] || engine; return <div className="y-agent-card" key={engine}><div className="y-agent-title"><EngineMark id={engine} logoUrl={entry?.logoUrl} size={18} /><strong>{label}</strong></div><span>Detected</span><div className="y-settings-actions"><button type="button" className="y-settings-action" onClick={() => onAuthStatus(engine)}>Auth status</button><button type="button" className="y-settings-action" onClick={() => onDoctor(engine)}>Doctor</button></div></div> })}</div></section>
+        <section className="y-settings-section"><h2>Agents</h2><p className="y-settings-lead">y auto-detects each CLI's install and sign-in state on the system &mdash; no separate y account needed.</p><div className="y-agent-grid">{engines.map((engine) => { const entry = catalog.find((item) => item.engine === engine); const label = entry?.label || LABELS[engine] || engine; const tool = cliStatus?.tools.find((t) => t.id === engine); const statusText = !tool ? 'Detecting...' : !tool.installed ? 'Not installed' : tool.authenticated ? 'Signed in' : 'Installed, not signed in'; return <div className="y-agent-card" key={engine}><div className="y-agent-title"><EngineMark id={engine} logoUrl={entry?.logoUrl} size={18} /><strong>{label}</strong></div><span>{statusText}</span><div className="y-settings-actions"><button type="button" className="y-settings-action" onClick={() => onAuthStatus(engine)}>Auth status</button><button type="button" className="y-settings-action" onClick={() => onDoctor(engine)}>Doctor</button></div></div> })}</div></section>
         <section className="y-settings-section"><h2>MCP & Plugins</h2><p className="y-settings-lead">Open each engine's native plugin and MCP views. y displays the real CLI output in the terminal.</p><div className="y-agent-grid">{engines.map((engine) => { const entry = catalog.find((item) => item.engine === engine); const label = entry?.label || LABELS[engine] || engine; return <div className="y-agent-card" key={engine}><div className="y-agent-title"><EngineMark id={engine} logoUrl={entry?.logoUrl} size={18} /><strong>{label}</strong></div><p>Inspect native integrations for this engine.</p><div className="y-settings-actions"><button type="button" className="y-settings-action" onClick={() => onOpenPlugins(engine)}>Plugins</button><button type="button" className="y-settings-action" onClick={() => onOpenMcp(engine)}>MCP</button></div></div> })}</div></section>
         <section className="y-settings-section"><h2>Modify Chat</h2><div className="y-settings-card"><div><strong>Reset to original app</strong><p>Restore the bundled y chat interface and replace the current customized Userland app.</p></div><button type="button" className="y-settings-action danger" onClick={onResetOriginalApp}>Reset</button></div></section>
       </div>
-    </div>
-  )
-}
-
-function BinaryRain(): React.JSX.Element {
-  const cols = useMemo(
-    () =>
-      Array.from({ length: 32 }, (_, i) => {
-        const dur = 14
-        const delay = -(Math.random() * dur)
-        const half = Array.from({ length: 60 }, () => (Math.random() > 0.5 ? '1' : '0'))
-        return { id: i, dur, delay, bits: [...half, ...half] }
-      }),
-    []
-  )
-  return (
-    <div className="y-bin-rain" aria-hidden="true">
-      {cols.map((col) => (
-        <div key={col.id} className="y-bin-col" style={{ left: `${(col.id / (cols.length - 1)) * 100}%`, animationDuration: `${col.dur}s`, animationDelay: `${col.delay}s`, animationDirection: col.id % 2 === 0 ? 'normal' : 'reverse' }}>
-          {col.bits.map((b, j) => (
-            <span key={j}>{b}</span>
-          ))}
-        </div>
-      ))}
     </div>
   )
 }
@@ -1318,59 +1296,14 @@ function OnboardingView({
   onFinish: () => void
   onOpenProject: () => void
 }) {
-  const [step, setStep] = useState(0)
-  const [authMethod, setAuthMethod] = useState(() => window.localStorage.getItem(ONBOARDING_AUTH_KEY) || '')
-  const [authEmail, setAuthEmail] = useState('')
-  const [authStatus, setAuthStatus] = useState('')
-  const [authBusy, setAuthBusy] = useState(false)
-  const [analyticsOn] = useState(() => analyticsEnabled())
   const [cliResult, setCliResult] = useState<OnboardingCliCheckResult | null>(null)
   const [checking, setChecking] = useState(false)
   const [copied, setCopied] = useState('')
-  const steps = ['Account', 'Agents']
 
   useEffect(() => {
     trackEvent('onboarding_viewed')
+    void runCliCheck()
   }, [])
-
-  async function chooseAuth(method: string): Promise<void> {
-    setAuthMethod(method)
-    window.localStorage.setItem(ONBOARDING_AUTH_KEY, method)
-    trackEvent('onboarding_auth_selected', { provider: method, authProvider: 'hexclave' })
-    if (method === 'skip') {
-      setAuthStatus('Skipped sign-in for now. You can continue setup and sign in later from settings.')
-      return
-    }
-    if (method !== 'google' && method !== 'github') {
-      setAuthStatus('')
-      return
-    }
-    setAuthBusy(true)
-    setAuthStatus(`Opening Hexclave sign-in in your browser. Choose ${method === 'google' ? 'Google' : 'GitHub'} there, then return to y automatically.`)
-    try {
-      const result = await window.y.auth.signInWithOAuth(method)
-      setAuthStatus(result.ok ? 'Hexclave sign-in opened in your browser.' : result.error || 'Could not start Hexclave auth.')
-    } finally {
-      setAuthBusy(false)
-    }
-  }
-
-  async function sendEmailAuth(): Promise<void> {
-    const email = authEmail.trim()
-    if (!email || !email.includes('@')) {
-      setAuthStatus('Enter a valid email address.')
-      return
-    }
-    setAuthBusy(true)
-    setAuthStatus('Sending Hexclave email sign-in...')
-    try {
-      const result = await window.y.auth.sendMagicLink(email)
-      setAuthStatus(result.ok ? 'Check your email for the Hexclave sign-in link.' : result.error || 'Could not send email sign-in.')
-      trackEvent('onboarding_email_auth_requested', { ok: result.ok })
-    } finally {
-      setAuthBusy(false)
-    }
-  }
 
   async function runCliCheck(): Promise<void> {
     setChecking(true)
@@ -1391,69 +1324,8 @@ function OnboardingView({
 
   function complete(): void {
     window.localStorage.setItem(ONBOARDING_DONE_KEY, 'true')
-    trackEvent('onboarding_completed', {
-      authMethod: authMethod || 'skipped',
-      analyticsEnabled: analyticsOn,
-      cliChecked: Boolean(cliResult)
-    })
+    trackEvent('onboarding_completed', { cliChecked: Boolean(cliResult) })
     onFinish()
-  }
-
-  if (step === 0) {
-    return (
-      <div className="y-login" data-testid="onboarding">
-        <div className="y-login-drag" />
-        <div className="y-login-left">
-          <div className="y-login-body">
-            <h1 className="y-login-headline">There are many coding agent apps out there, this one is yours.</h1>
-            <p className="y-login-sub">Sign in or create an account to get started.</p>
-            <div className="y-login-form">
-              <input
-                type="email"
-                className="y-login-input"
-                value={authEmail}
-                placeholder="Email address"
-                onChange={(e) => setAuthEmail(e.currentTarget.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && authEmail.includes('@')) void sendEmailAuth()
-                }}
-                disabled={authBusy}
-              />
-              <button
-                type="button"
-                className="y-login-magic"
-                onClick={() => void sendEmailAuth()}
-                disabled={authBusy}
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>
-                {authBusy ? 'SENDING...' : 'SEND MAGIC LINK'}
-              </button>
-              <div className="y-login-or"><span>OR</span></div>
-              <button type="button" className="y-login-oauth" onClick={() => void chooseAuth('google')} disabled={authBusy}>
-                <svg width="16" height="16" viewBox="0 0 24 24"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>
-                CONTINUE WITH GOOGLE
-              </button>
-              <button type="button" className="y-login-oauth" onClick={() => void chooseAuth('github')} disabled={authBusy}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
-                CONTINUE WITH GITHUB
-              </button>
-              {authStatus ? <div className="y-login-status">{authStatus}</div> : null}
-              {authStatus && !authBusy ? (
-                <button type="button" className="y-login-continue" onClick={() => setStep(1)}>
-                  Continue setup →
-                </button>
-              ) : null}
-            </div>
-            <button type="button" className="y-login-skip" onClick={() => { void chooseAuth('skip'); setStep(1) }}>
-              Skip for now
-            </button>
-          </div>
-        </div>
-        <div className="y-login-right" aria-hidden="true">
-          <BinaryRain />
-        </div>
-      </div>
-    )
   }
 
   return (
@@ -1464,91 +1336,65 @@ function OnboardingView({
           <div>
             <p className="y-onboarding-kicker">Welcome to y</p>
             <h1>Set up your coding agents.</h1>
-            <p>Verify Claude Code and Codex, then start from the chat-first workflow.</p>
+            <p>y detects whether Claude Code and Codex are installed and signed in automatically.</p>
           </div>
         </div>
-        <div className="y-onboarding-steps" aria-label="Onboarding progress">
-          {steps.map((label, index) => (
-            <button
-              type="button"
-              key={label}
-              className={'y-onboarding-step' + (index === step ? ' active' : '') + (index < step ? ' done' : '')}
-              onClick={() => setStep(index)}
-            >
-              <span>{index + 1}</span>
-              {label}
+
+        <section className="y-onboarding-panel">
+          <div className="y-onboarding-row">
+            <div>
+              <h2>Agent CLIs</h2>
+              <p className="y-onboarding-muted">y runs the official local CLIs and checks their install and sign-in state on your system.</p>
+            </div>
+            <button type="button" className="y-onboarding-primary" onClick={() => void runCliCheck()} disabled={checking}>
+              {checking ? 'Checking...' : 'Check again'}
             </button>
-          ))}
-        </div>
-
-        {step === 1 ? (
-          <section className="y-onboarding-panel">
-            <div className="y-onboarding-row">
-              <div>
-                <h2>Agent CLIs</h2>
-                <p className="y-onboarding-muted">y runs the official local CLIs. Check both once before your first project.</p>
-              </div>
-              <button type="button" className="y-onboarding-primary" onClick={() => void runCliCheck()} disabled={checking}>
-                {checking ? 'Checking...' : cliResult ? 'Check again' : 'Check installs'}
-              </button>
-            </div>
-            <div className="y-cli-grid">
-              {(cliResult?.tools ?? [
-                {
-                  id: 'claude-code',
-                  label: 'Claude Code',
-                  command: 'claude',
-                  installed: false,
-                  installCommand: 'curl -fsSL https://claude.ai/install.sh | bash',
-                  authCommand: 'claude auth login',
-                  docsUrl: 'https://docs.anthropic.com/en/docs/claude-code/quickstart'
-                },
-                {
-                  id: 'codex',
-                  label: 'Codex',
-                  command: 'codex',
-                  installed: false,
-                  installCommand: 'npm install -g @openai/codex',
-                  authCommand: 'codex login',
-                  docsUrl: 'https://github.com/openai/codex'
-                }
-              ] as OnboardingCliToolStatus[]).map((tool) => (
-                <div key={tool.id} className={'y-cli-card' + (tool.installed ? ' installed' : '')}>
-                  <div className="y-cli-head">
-                    <EngineMark id={tool.id} logoUrl={engineLogoFor(tool.id, catalog)} size={22} />
-                    <div>
-                      <strong>{tool.label}</strong>
-                      <span>{tool.installed ? (tool.version || 'Installed') : 'Not detected yet'}</span>
-                    </div>
+          </div>
+          <div className="y-cli-grid">
+            {(cliResult?.tools ?? [
+              {
+                id: 'claude-code',
+                label: 'Claude Code',
+                command: 'claude',
+                installed: false,
+                authenticated: false,
+                installCommand: 'curl -fsSL https://claude.ai/install.sh | bash',
+                authCommand: 'claude auth login',
+                docsUrl: 'https://docs.anthropic.com/en/docs/claude-code/quickstart'
+              },
+              {
+                id: 'codex',
+                label: 'Codex',
+                command: 'codex',
+                installed: false,
+                authenticated: false,
+                installCommand: 'npm install -g @openai/codex',
+                authCommand: 'codex login',
+                docsUrl: 'https://github.com/openai/codex'
+              }
+            ] as OnboardingCliToolStatus[]).map((tool) => (
+              <div key={tool.id} className={'y-cli-card' + (tool.installed ? ' installed' : '')}>
+                <div className="y-cli-head">
+                  <EngineMark id={tool.id} logoUrl={engineLogoFor(tool.id, catalog)} size={22} />
+                  <div>
+                    <strong>{tool.label}</strong>
+                    <span>{!tool.installed ? (checking ? 'Detecting...' : 'Not installed') : tool.authenticated ? 'Signed in' : 'Installed, not signed in'}</span>
                   </div>
-                  <code>{tool.installed ? tool.authCommand : tool.installCommand}</code>
-                  <button type="button" className="y-onboarding-secondary" onClick={() => void copyCommand(tool.installed ? tool.authCommand : tool.installCommand, tool.label)}>
-                    {copied === tool.label ? 'Copied' : tool.installed ? 'Copy login' : 'Copy install'}
-                  </button>
                 </div>
-              ))}
-            </div>
-          </section>
-        ) : null}
-
-
+                <code>{!tool.installed ? tool.installCommand : tool.authCommand}</code>
+                <button type="button" className="y-onboarding-secondary" onClick={() => void copyCommand(!tool.installed ? tool.installCommand : tool.authCommand, tool.label)}>
+                  {copied === tool.label ? 'Copied' : !tool.installed ? 'Copy install' : 'Copy login'}
+                </button>
+              </div>
+            ))}
+          </div>
+        </section>
 
         <div className="y-onboarding-footer">
-          <button type="button" className="y-onboarding-secondary" onClick={() => setStep(Math.max(0, step - 1))} disabled={step === 0}>Back</button>
-          {step === 0 ? (
-            <button type="button" className="y-onboarding-primary" onClick={() => {
-              trackEvent('onboarding_step_completed', { step: steps[step] })
-              setStep(step + 1)
-            }}>
-              Continue
-            </button>
-          ) : null}
-          {step === 1 ? (
-            <div className="y-onboarding-footer-end">
-              <button type="button" className="y-onboarding-secondary" onClick={onOpenProject}>Open folder</button>
-              <button type="button" className="y-onboarding-primary" onClick={complete}>Start using y</button>
-            </div>
-          ) : null}
+          <div className="y-onboarding-footer-end">
+            <button type="button" className="y-onboarding-secondary" onClick={onOpenProject}>Open folder</button>
+            <button type="button" className="y-onboarding-primary" onClick={complete}>Start using y</button>
+          </div>
         </div>
       </div>
     </div>
@@ -1560,6 +1406,7 @@ export default function Chat() {
   const [searchOpen, setSearchOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [onboardingDone, setOnboardingDone] = useState(() => window.localStorage.getItem(ONBOARDING_DONE_KEY) === 'true')
+  const [cliStatus, setCliStatus] = useState<OnboardingCliCheckResult | null>(null)
   const [soundEnabled, setSoundEnabled] = useState(() => storedBoolean('y.settings.sound', true))
   const [searchQuery, setSearchQuery] = useState('')
   const [toast, setToast] = useState('')
@@ -1647,6 +1494,11 @@ export default function Chat() {
     const id = window.setInterval(() => setElapsedTick(Date.now()), 1000)
     return () => window.clearInterval(id)
   }, [busy, activeChatId])
+
+  useEffect(() => {
+    if (PREVIEW) return
+    void window.y.onboarding.checkCli().then(setCliStatus)
+  }, [])
 
   useEffect(() => {
     if (engineId === 'codex' || composerMode !== 'goal') return
@@ -4657,7 +4509,7 @@ export default function Chat() {
           z-index: 9999;
           display: grid;
           place-items: center;
-          background: #0b0f18;
+          background: #0a0a0b;
           padding: 48px 24px;
           overflow: auto;
         }
@@ -4692,43 +4544,8 @@ export default function Chat() {
           letter-spacing: -0.02em;
         }
         .y-onboarding p { margin: 0; color: var(--y-text-2); line-height: 1.55; }
-        .y-onboarding-steps {
-          display: flex;
-          gap: 8px;
-          margin: 26px 0 18px;
-        }
-        .y-onboarding-step {
-          display: inline-flex;
-          align-items: center;
-          gap: 8px;
-          height: 34px;
-          padding: 0 12px;
-          border: 1px solid var(--y-border);
-          border-radius: 999px;
-          background: rgba(255,255,255,0.035);
-          color: var(--y-text-2);
-          font: inherit;
-          font-size: 12px;
-          cursor: pointer;
-        }
-        .y-onboarding-step span {
-          width: 18px;
-          height: 18px;
-          border-radius: 50%;
-          display: grid;
-          place-items: center;
-          background: rgba(255,255,255,0.08);
-          color: var(--y-text-3);
-          font-size: 10px;
-          font-weight: 700;
-        }
-        .y-onboarding-step.active {
-          border-color: rgba(120,160,215,0.34);
-          background: rgba(95,135,190,0.16);
-          color: var(--y-text);
-        }
-        .y-onboarding-step.done span { background: #4e7fb8; color: #fff; }
         .y-onboarding-panel {
+          margin-top: 26px;
           min-height: 320px;
           border: 1px solid var(--y-border);
           border-radius: 20px;
@@ -4876,214 +4693,6 @@ export default function Chat() {
         }
         .y-guide-grid > div { padding: 16px; min-height: 106px; }
         .y-onboarding-actions { justify-content: flex-end; margin-top: 20px; }
-
-        /* ---- Full-screen login page ---- */
-        .y-login {
-          position: fixed;
-          inset: 0;
-          z-index: 9999;
-          display: flex;
-        }
-        .y-login-drag {
-          position: absolute;
-          top: 0; left: 0; right: 0;
-          height: 38px;
-          -webkit-app-region: drag;
-          z-index: 10;
-          pointer-events: none;
-        }
-        .y-login-left {
-          width: 44%;
-          flex-shrink: 0;
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          justify-content: center;
-          padding: 48px 60px;
-          background: #0b0f18;
-          -webkit-app-region: no-drag;
-          overflow-y: auto;
-          box-shadow: 6px 0 24px rgba(0,0,0,0.7);
-        }
-        .y-login-wordmark {
-          font-family: var(--y-mono);
-          font-size: 20px;
-          font-weight: 700;
-          letter-spacing: -0.02em;
-          color: rgba(255,255,255,0.88);
-          -webkit-app-region: no-drag;
-          padding-top: 4px;
-        }
-        .y-login-body {
-          width: 100%;
-          max-width: 360px;
-          display: flex;
-          flex-direction: column;
-        }
-        .y-login-headline {
-          margin: 0 0 14px;
-          font-size: clamp(20px, 2.2vw, 28px);
-          font-weight: 700;
-          letter-spacing: -0.03em;
-          line-height: 1.22;
-          color: rgba(255,255,255,0.93);
-        }
-        .y-login-sub {
-          margin: 0 0 28px;
-          font-size: 14px;
-          color: rgba(255,255,255,0.44);
-          line-height: 1.5;
-        }
-        .y-login-form {
-          display: flex;
-          flex-direction: column;
-          gap: 10px;
-        }
-        .y-login-input {
-          height: 44px;
-          padding: 0 14px;
-          border: 1px solid rgba(255,255,255,0.13);
-          border-radius: 9px;
-          background: rgba(255,255,255,0.04);
-          color: rgba(255,255,255,0.88);
-          font: inherit;
-          font-size: 14px;
-          outline: none;
-          transition: border-color 0.15s;
-        }
-        .y-login-input::placeholder { color: rgba(255,255,255,0.26); }
-        .y-login-input:focus { border-color: rgba(120,160,215,0.5); }
-        .y-login-input:disabled { opacity: 0.5; }
-        .y-login-magic {
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          gap: 8px;
-          height: 44px;
-          border: 1px solid rgba(255,255,255,0.16);
-          border-radius: 9px;
-          background: rgba(255,255,255,0.95);
-          color: #0a0a0b;
-          font: inherit;
-          font-size: 11.5px;
-          font-weight: 700;
-          letter-spacing: 0.09em;
-          cursor: pointer;
-          transition: background 0.14s;
-        }
-        .y-login-magic:hover:not(:disabled) { background: #ffffff; }
-        .y-login-magic:disabled { opacity: 0.45; cursor: default; }
-        .y-login-or {
-          position: relative;
-          display: flex;
-          align-items: center;
-          margin: 4px 0;
-          color: rgba(255,255,255,0.26);
-          font-size: 11.5px;
-          letter-spacing: 0.06em;
-        }
-        .y-login-or::before,
-        .y-login-or::after {
-          content: '';
-          flex: 1;
-          height: 1px;
-          background: rgba(255,255,255,0.09);
-        }
-        .y-login-or span { padding: 0 12px; }
-        .y-login-oauth {
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          gap: 10px;
-          height: 44px;
-          border: 1px solid rgba(255,255,255,0.13);
-          border-radius: 9px;
-          background: transparent;
-          color: rgba(255,255,255,0.78);
-          font: inherit;
-          font-size: 11.5px;
-          font-weight: 700;
-          letter-spacing: 0.07em;
-          cursor: pointer;
-          transition: background 0.13s, border-color 0.13s;
-        }
-        .y-login-oauth:hover:not(:disabled) {
-          background: rgba(255,255,255,0.055);
-          border-color: rgba(255,255,255,0.2);
-          color: rgba(255,255,255,0.92);
-        }
-        .y-login-oauth:disabled { opacity: 0.45; cursor: default; }
-        .y-login-status {
-          margin-top: 2px;
-          font-size: 12px;
-          line-height: 1.45;
-          color: rgba(255,255,255,0.48);
-        }
-        .y-login-continue {
-          height: 38px;
-          border: 1px solid rgba(255,255,255,0.1);
-          border-radius: 9px;
-          background: rgba(255,255,255,0.06);
-          color: rgba(255,255,255,0.78);
-          font: inherit;
-          font-size: 13px;
-          font-weight: 600;
-          cursor: pointer;
-          transition: background 0.13s;
-        }
-        .y-login-continue:hover { background: rgba(255,255,255,0.1); color: rgba(255,255,255,0.95); }
-        .y-login-analytics {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          margin-top: 28px;
-          color: rgba(255,255,255,0.32);
-          font-size: 12px;
-          cursor: pointer;
-          -webkit-app-region: no-drag;
-        }
-        .y-login-skip {
-          margin-top: 10px;
-          border: none;
-          background: transparent;
-          color: rgba(255,255,255,0.28);
-          font: inherit;
-          font-size: 12px;
-          cursor: pointer;
-          text-align: left;
-          padding: 0;
-          -webkit-app-region: no-drag;
-        }
-        .y-login-skip:hover { color: rgba(255,255,255,0.52); }
-        .y-login-right {
-          flex: 1;
-          position: relative;
-          overflow: hidden;
-          background: #ffffff;
-        }
-        .y-bin-rain {
-          position: absolute;
-          inset: 0 0 0 12px;
-          font-family: 'SF Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-          font-size: 13px;
-          color: rgba(10,10,15,0.45);
-          overflow: hidden;
-          pointer-events: none;
-        }
-        .y-bin-col {
-          position: absolute;
-          top: 0;
-          animation: y-bin-fall linear infinite;
-          will-change: transform;
-        }
-        .y-bin-col span {
-          display: block;
-          line-height: 1.3;
-        }
-        @keyframes y-bin-fall {
-          from { transform: translateY(-50%); }
-          to   { transform: translateY(0%); }
-        }
 
       `}</style>
 
@@ -5346,6 +4955,7 @@ export default function Chat() {
               onSoundEnabled={setSoundEnabled}
               engines={engines}
               catalog={catalog}
+              cliStatus={cliStatus}
               onResetOriginalApp={() => {
                 if (!window.confirm('Reset y to the original app? This replaces your current customized app.')) return
                 void window.y.userland.resetToSeed().then((res) => {
