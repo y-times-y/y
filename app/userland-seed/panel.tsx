@@ -1405,7 +1405,7 @@ function OnboardingView({
           {allReady ? <p className="y-onboarding-ready-note">You're all set.</p> : <span />}
           <div className="y-onboarding-footer-end">
             <button type="button" className="y-onboarding-secondary" onClick={onOpenProject}>Open folder</button>
-            <button type="button" className={'y-onboarding-primary' + (allReady ? ' is-ready' : '')} onClick={complete}>Start using y</button>
+            <button type="button" className="y-onboarding-primary" onClick={complete}>Start using y</button>
           </div>
         </div>
       </div>
@@ -4681,14 +4681,6 @@ export default function Chat() {
           border: 1px solid rgba(255,255,255,0.12);
           background: #f7f7f4;
           color: #0a0a0b;
-        }
-        .y-onboarding-primary.is-ready {
-          box-shadow: 0 0 0 3px rgba(74,222,128,0.28), 0 0 18px rgba(74,222,128,0.4);
-          animation: y-ready-pulse 1.8s ease-in-out infinite;
-        }
-        @keyframes y-ready-pulse {
-          0%, 100% { box-shadow: 0 0 0 3px rgba(74,222,128,0.28), 0 0 18px rgba(74,222,128,0.4); }
-          50% { box-shadow: 0 0 0 5px rgba(74,222,128,0.4), 0 0 26px rgba(74,222,128,0.6); }
         }
         .y-onboarding-primary:disabled,
         .y-onboarding-secondary:disabled { opacity: 0.45; cursor: default; }
