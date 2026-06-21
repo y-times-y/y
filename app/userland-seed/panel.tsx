@@ -1328,6 +1328,8 @@ function OnboardingView({
     onFinish()
   }
 
+  const allReady = Boolean(cliResult?.tools.length) && cliResult!.tools.every((tool) => tool.authenticated)
+
   return (
     <div className="y-onboarding" data-testid="onboarding">
       <div className="y-onboarding-card">
@@ -1373,35 +1375,37 @@ function OnboardingView({
                 docsUrl: 'https://github.com/openai/codex'
               }
             ] as OnboardingCliToolStatus[]).map((tool) => (
-              <div key={tool.id} className={'y-cli-card' + (tool.installed ? ' installed' : '')}>
+              <div key={tool.id} className={'y-cli-card' + (tool.installed ? ' installed' : '') + (tool.authenticated ? ' ready' : '')}>
                 <div className="y-cli-head">
                   <EngineMark id={tool.id} logoUrl={engineLogoFor(tool.id, catalog)} size={22} />
                   <div>
                     <strong>{tool.label}</strong>
                     <span>{!tool.installed ? (checking ? 'Detecting...' : 'Not installed') : tool.authenticated ? 'Signed in' : 'Installed, not signed in'}</span>
                   </div>
+                  {tool.authenticated ? (
+                    <div className="y-cli-tick" aria-label="Signed in">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 13 9 18 20 6" /></svg>
+                    </div>
+                  ) : null}
                 </div>
-                {tool.authenticated ? (
-                  <div className="y-cli-tick" aria-label="Signed in">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 13 9 18 20 6" /></svg>
-                  </div>
-                ) : (
+                {!tool.authenticated ? (
                   <>
                     <code>{!tool.installed ? tool.installCommand : tool.authCommand}</code>
                     <button type="button" className="y-onboarding-secondary" onClick={() => void copyCommand(!tool.installed ? tool.installCommand : tool.authCommand, tool.label)}>
                       {copied === tool.label ? 'Copied' : !tool.installed ? 'Copy install' : 'Copy login'}
                     </button>
                   </>
-                )}
+                ) : null}
               </div>
             ))}
           </div>
         </section>
 
         <div className="y-onboarding-footer">
+          {allReady ? <p className="y-onboarding-ready-note">You're all set.</p> : <span />}
           <div className="y-onboarding-footer-end">
             <button type="button" className="y-onboarding-secondary" onClick={onOpenProject}>Open folder</button>
-            <button type="button" className="y-onboarding-primary" onClick={complete}>Start using y</button>
+            <button type="button" className={'y-onboarding-primary' + (allReady ? ' is-ready' : '')} onClick={complete}>Start using y</button>
           </div>
         </div>
       </div>
@@ -4654,7 +4658,13 @@ export default function Chat() {
           justify-content: space-between;
           gap: 14px;
         }
-        .y-onboarding-footer { margin-top: 18px; }
+        .y-onboarding-footer { margin-top: 18px; align-items: center; }
+        .y-onboarding-ready-note {
+          margin: 0;
+          color: rgba(74,222,128,0.92);
+          font-size: 13px;
+          font-weight: 700;
+        }
         .y-onboarding-footer-end { display: flex; gap: 8px; margin-left: auto; }
         .y-onboarding-primary,
         .y-onboarding-secondary {
@@ -4665,11 +4675,20 @@ export default function Chat() {
           font-size: 12px;
           font-weight: 700;
           cursor: pointer;
+          transition: transform 0.15s, box-shadow 0.15s;
         }
         .y-onboarding-primary {
           border: 1px solid rgba(255,255,255,0.12);
           background: #f7f7f4;
           color: #0a0a0b;
+        }
+        .y-onboarding-primary.is-ready {
+          box-shadow: 0 0 0 3px rgba(74,222,128,0.28), 0 0 18px rgba(74,222,128,0.4);
+          animation: y-ready-pulse 1.8s ease-in-out infinite;
+        }
+        @keyframes y-ready-pulse {
+          0%, 100% { box-shadow: 0 0 0 3px rgba(74,222,128,0.28), 0 0 18px rgba(74,222,128,0.4); }
+          50% { box-shadow: 0 0 0 5px rgba(74,222,128,0.4), 0 0 26px rgba(74,222,128,0.6); }
         }
         .y-onboarding-primary:disabled,
         .y-onboarding-secondary:disabled { opacity: 0.45; cursor: default; }
@@ -4685,13 +4704,19 @@ export default function Chat() {
           gap: 12px;
         }
         .y-cli-card.installed { border-color: rgba(74,222,128,0.24); background: rgba(74,222,128,0.07); }
+        .y-cli-card.ready { border-color: rgba(74,222,128,0.4); background: rgba(74,222,128,0.1); }
         .y-cli-head { display: flex; align-items: center; gap: 10px; }
         .y-cli-tick {
           display: flex;
           align-items: center;
-          gap: 6px;
-          height: 34px;
-          color: rgba(74,222,128,0.85);
+          justify-content: center;
+          width: 24px;
+          height: 24px;
+          border-radius: 50%;
+          margin-left: auto;
+          flex-shrink: 0;
+          background: rgba(74,222,128,0.18);
+          color: #4ade80;
         }
         .y-cli-card code {
           display: block;
