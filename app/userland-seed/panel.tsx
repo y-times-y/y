@@ -1,5 +1,17 @@
-import { memo, useEffect, useRef, useState, type ClipboardEvent, type CSSProperties, type DragEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useRef, useState, type ClipboardEvent, type CSSProperties, type DragEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import XtermTerminal from '@renderer/kernel/XtermTerminal'
+import {
+  CHAT_SURFACE_CLASSES,
+  ChatAssistantMessage,
+  ChatComposerShell,
+  ChatEditedFilesSummary,
+  ChatThinkingBlock,
+  ChatToolMessage,
+  ChatUserMessage,
+  ChatWorkSummary,
+  chatWorkHasCollapsibleTool,
+  type ChatWorkEntry
+} from '@renderer/kernel/ChatPrimitives'
 import hljs from 'highlight.js/lib/common'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -23,12 +35,20 @@ const PREVIEW_CATALOG: EngineModelCatalog[] = [
     label: 'Claude Code',
     defaultModel: 'claude-sonnet-4-6#effort=medium',
     models: [
-      { id: 'claude-sonnet-4-6#effort=low', label: 'Sonnet 4.6 · Low' },
-      { id: 'claude-sonnet-4-6#effort=medium', label: 'Sonnet 4.6 · Medium' },
-      { id: 'claude-sonnet-4-6#effort=high', label: 'Sonnet 4.6 · High' },
-      { id: 'claude-opus-4-8#effort=medium', label: 'Opus 4.8 · Medium' },
-      { id: 'claude-opus-4-8#effort=max', label: 'Opus 4.8 · Max' },
-      { id: 'claude-haiku-4-5-20251001#effort=medium', label: 'Haiku 4.5 · Medium' }
+      { id: 'claude-sonnet-4-6#effort=low', label: 'Sonnet 4.6 · Low', contextWindow: 200_000 },
+      { id: 'claude-sonnet-4-6#effort=medium', label: 'Sonnet 4.6 · Medium', contextWindow: 200_000 },
+      { id: 'claude-sonnet-4-6#effort=high', label: 'Sonnet 4.6 · High', contextWindow: 200_000 },
+      { id: 'claude-sonnet-4-6#effort=max', label: 'Sonnet 4.6 · Max', contextWindow: 200_000 },
+      { id: 'claude-sonnet-4-6[1m]#effort=low', label: 'Sonnet 4.6 · Low', contextWindow: 1_000_000 },
+      { id: 'claude-sonnet-4-6[1m]#effort=medium', label: 'Sonnet 4.6 · Medium', contextWindow: 1_000_000 },
+      { id: 'claude-sonnet-4-6[1m]#effort=high', label: 'Sonnet 4.6 · High', contextWindow: 1_000_000 },
+      { id: 'claude-sonnet-4-6[1m]#effort=max', label: 'Sonnet 4.6 · Max', contextWindow: 1_000_000 },
+      { id: 'claude-opus-4-8#effort=medium', label: 'Opus 4.8 · Medium', contextWindow: 1_000_000 },
+      { id: 'claude-opus-4-8#effort=max', label: 'Opus 4.8 · Max', contextWindow: 1_000_000 },
+      { id: 'claude-opus-4-8[1m]#effort=medium', label: 'Opus 4.8 · Medium', contextWindow: 1_000_000 },
+      { id: 'claude-opus-4-8[1m]#effort=max', label: 'Opus 4.8 · Max', contextWindow: 1_000_000 },
+      { id: 'claude-haiku-4-5-20251001#effort=medium', label: 'Haiku 4.5 · Medium', contextWindow: 200_000 },
+      { id: 'claude-haiku-4-5-20251001#effort=max', label: 'Haiku 4.5 · Max', contextWindow: 200_000 }
     ]
   },
   {
@@ -55,6 +75,7 @@ type QueuedFollowUp = {
   id: string
   text: string
   steer: boolean
+  goal?: boolean
 }
 
 type ChatRuntime = {
@@ -64,6 +85,7 @@ type ChatRuntime = {
   startedAt?: number
   status?: string
   error?: string
+  goalBacked?: boolean
 }
 
 type CompletionAudioContext = AudioContext & { webkitAudioContext?: never }
@@ -74,6 +96,7 @@ type ComposerTerminal = {
   command?: string
   body: string
   running: boolean
+  transient?: boolean
 }
 
 type StreamBuffer = {
@@ -89,6 +112,24 @@ type PastedTextAttachment = {
   size: number
 }
 
+type OnboardingCliToolStatus = {
+  id: 'claude-code' | 'codex'
+  label: string
+  command: string
+  installed: boolean
+  version?: string
+  installCommand: string
+  authCommand: string
+  docsUrl: string
+  error?: string
+}
+
+type OnboardingCliCheckResult = {
+  ok: boolean
+  checkedAt: string
+  tools: OnboardingCliToolStatus[]
+}
+
 type FileTreeNode =
   | { kind: 'file'; file: SelectedFile; name: string; depth: number }
   | { kind: 'folder'; folderPath: string; name: string; depth: number }
@@ -96,9 +137,27 @@ type FileTreeNode =
 const STREAM_MIN_CHARS = 360
 const STREAM_MAX_CHARS = 1400
 const STREAM_MAX_HOLD_MS = 1400
+const STREAM_FLUSH_MS = 180
 const PASTE_ATTACHMENT_MIN_CHARS = 900
 const PASTE_ATTACHMENT_MIN_LINES = 12
+const MAX_FILE_ATTACHMENTS = 8
+const MAX_FILE_ATTACHMENT_BYTES = 25 * 1024 * 1024
+const MAX_PASTED_ATTACHMENTS = 3
+const MAX_PASTED_ATTACHMENT_BYTES = 120 * 1024
+const MAX_TOTAL_PASTED_ATTACHMENT_BYTES = 240 * 1024
 const COMPOSER_MAX_HEIGHT = 164
+const ONBOARDING_DONE_KEY = 'y.onboarding.done'
+const ONBOARDING_AUTH_KEY = 'y.onboarding.auth'
+const ANALYTICS_ENABLED_KEY = 'y.analytics.enabled'
+
+function analyticsEnabled(): boolean {
+  return storedBoolean(ANALYTICS_ENABLED_KEY, true)
+}
+
+function trackEvent(name: string, props?: Record<string, unknown>): void {
+  if (PREVIEW || !analyticsEnabled() || !window.y.analytics) return
+  void window.y.analytics.track(name, props)
+}
 
 function BinaryYMark() {
   // 24 rows = 12 visible + 12 duplicate — even count keeps alternating pattern aligned at loop boundary
@@ -206,7 +265,7 @@ function buildVisibleTree(
   return nodes
 }
 
-type FileMode = 'preview' | 'edit'
+type FileMode = 'preview' | 'edit' | 'diff'
 
 function defaultRunOptions(): EngineRunOptions {
   return {}
@@ -294,11 +353,15 @@ function stripAnsi(text: string): string {
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
 }
 
+function modelDisplayLabel(engineId: string, modelId: string, label: string): string {
+  return engineId === 'claude-code' && modelId.includes('[1m]') ? `${label} 1M` : label
+}
+
 function catalogBaseModels(cat: EngineModelCatalog[], engineId: string): Array<{ id: string; label: string }> {
   const seen = new Set<string>()
   return (cat.find(function (c) { return c.engine === engineId })?.models ?? []).reduce<Array<{ id: string; label: string }>>(function (acc, m) {
     const base = m.id.split('#')[0]
-    const label = m.label.split(' · ')[0]
+    const label = modelDisplayLabel(engineId, base, m.label.split(' · ')[0])
     if (!seen.has(base)) { seen.add(base); acc.push({ id: base, label }) }
     return acc
   }, [])
@@ -322,33 +385,11 @@ function toolVerbFromName(name: string): string {
   return map[name] ?? name.charAt(0).toUpperCase() + name.slice(1)
 }
 
-function toolIconName(verb: string, name?: string): string {
-  const label = `${verb} ${name ?? ''}`.toLowerCase()
-  if (label.includes('edit') || label.includes('write')) return 'edit'
-  if (label.includes('read')) return 'files'
-  if (label.includes('grep') || label.includes('search') || label.includes('find')) return 'search'
-  if (label.includes('glob') || label.includes('list')) return 'folder'
-  if (label.includes('shell') || label.includes('bash') || label.includes('run') || label.includes('terminal')) return 'terminal'
-  if (label.includes('web') || label.includes('request') || label.includes('fetch')) return 'auto'
-  return 'plugins'
-}
-
 function toolTargetFile(target?: string): string | undefined {
   if (!target) return undefined
   const clean = target.replace(/ · .*$/, '')
   const matches = clean.match(/[A-Za-z0-9_@.()\/-]+\.[A-Za-z0-9]+/g)
   return matches?.[matches.length - 1]
-}
-
-function diffStat(body?: string): { added: number; removed: number } | null {
-  if (!body) return null
-  let added = 0
-  let removed = 0
-  for (const line of body.split('\n')) {
-    if (line.startsWith('+ ')) added += 1
-    else if (line.startsWith('- ')) removed += 1
-  }
-  return added || removed ? { added, removed } : null
 }
 
 const NAV = [
@@ -788,47 +829,9 @@ function hljsHighlight(code: string, lang: string): string {
   return esc(code)
 }
 
-function splitBlocks(text: string) {
-  const parts: { kind: 'text' | 'code'; lang?: string; value: string }[] = []
-  let rest = text || ''
-  while (rest.length) {
-    const i = rest.indexOf('```')
-    if (i === -1) {
-      if (rest.trim()) parts.push({ kind: 'text', value: rest })
-      break
-    }
-    if (i > 0) {
-      const chunk = rest.slice(0, i)
-      if (chunk.trim()) parts.push({ kind: 'text', value: chunk })
-    }
-    rest = rest.slice(i + 3)
-    const nl = rest.indexOf('\n')
-    const lang = normalizeLang(nl === -1 ? rest : rest.slice(0, nl))
-    rest = nl === -1 ? '' : rest.slice(nl + 1)
-    const end = rest.indexOf('```')
-    if (end === -1) {
-      const code = rest.replace(/\n$/, '')
-      if (code.trim() || lang) parts.push({ kind: 'code', lang: lang, value: code })
-      break
-    }
-    parts.push({ kind: 'code', lang: lang, value: rest.slice(0, end).replace(/\n$/, '') })
-    rest = rest.slice(end + 3)
-    if (rest.startsWith('\n')) rest = rest.slice(1)
-  }
-  return parts
-}
-
-function inlineMd(text: string) {
-  let s = esc(text)
-  s = s.replace(/`([^`\n]+)`/g, '<code class="md-inline">$1</code>')
-  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-  s = s.replace(/\*([^*]+)\*/g, '<em>$1</em>')
-  s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a class="md-link" href="$2" target="_blank" rel="noreferrer">$1</a>')
-  return s
-}
-
 function normalizeMarkdownFences(text: string): string {
   return (text || '')
+    .replace(/(^|\n)\s*<\/?[a-z][a-z0-9_-]*_docs\s*\/?>\s*(?=\n|$)/gi, '$1')
     .replace(/<CodeGroup[^>]*>\s*\n?([\s\S]*?)\n?\s*<\/CodeGroup>/g, function (_match, inner: string) {
       return `\n${inner.replace(/^ {2}/gm, '').trim()}\n`
     })
@@ -888,130 +891,25 @@ function splitVisibleStreamText(buffer: StreamBuffer, force = false): { visible:
   return { visible: buffer.text.slice(0, boundary), rest: buffer.text.slice(boundary) }
 }
 
-function TableBlock({ lines }: { lines: string[] }) {
-  const rows = lines
-    .filter(function (l) { return !/^\s*\|[\s\-:|]+\|\s*$/.test(l) })
-    .map(function (l) { return l.trim().replace(/^\||\|$/g, '').split('|').map(function (c) { return c.trim() }) })
-  if (!rows.length) return null
-  const header = rows[0]
-  const body = rows.slice(1)
+function FileDiffPreview({ diff }: { diff: string }) {
+  const lines = diff.split(/\r?\n/u).filter((line) => line.trim() !== '')
   return (
-    <div className="md-table-wrap">
-      <table className="md-table">
-        <thead><tr>{header.map(function (c, j) { return <th key={j} dangerouslySetInnerHTML={{ __html: inlineMd(c) }} /> })}</tr></thead>
-        <tbody>{body.map(function (row, i) { return <tr key={i}>{row.map(function (c, j) { return <td key={j} dangerouslySetInnerHTML={{ __html: inlineMd(c) }} /> })}</tr> })}</tbody>
-      </table>
-    </div>
-  )
-}
-
-function TextBlock({ text }: { text: string }) {
-  const lines = text.replace(/\r\n/g, '\n').split('\n')
-  const elements: React.ReactElement[] = []
-  let i = 0
-  while (i < lines.length) {
-    const line = lines[i]
-    const trimmed = line.trim()
-    if (!trimmed) { i++; continue }
-    // Heading
-    const h = trimmed.match(/^(#{1,3})\s+(.+)$/)
-    if (h) {
-      const level = h[1].length
-      const cls = level === 1 ? 'md-h1' : level === 2 ? 'md-h2' : 'md-h3'
-      elements.push(<div key={i} className={cls} dangerouslySetInnerHTML={{ __html: inlineMd(h[2]) }} />)
-      i++; continue
-    }
-    // Horizontal rule
-    if (/^[-*_]{3,}\s*$/.test(trimmed)) {
-      elements.push(<hr key={i} className="md-hr" />)
-      i++; continue
-    }
-    // Raw HTML block
-    if (trimmed.startsWith('<')) {
-      const htmlLines: string[] = []
-      while (i < lines.length && lines[i].trim()) {
-        htmlLines.push(lines[i])
-        i++
-      }
-      elements.push(<div key={`html${i}`} className="md-html" dangerouslySetInnerHTML={{ __html: htmlLines.join('\n') }} />)
-      continue
-    }
-    // Blockquote
-    if (trimmed.startsWith('> ')) {
-      const quoteLines: string[] = []
-      while (i < lines.length && lines[i].trim().startsWith('>')) {
-        quoteLines.push(lines[i].trim().replace(/^>\s?/, ''))
-        i++
-      }
-      elements.push(<blockquote key={`q${i}`} className="md-quote" dangerouslySetInnerHTML={{ __html: inlineMd(quoteLines.join('\n')) }} />)
-      continue
-    }
-    // Table
-    if (trimmed.startsWith('|')) {
-      const tableLines: string[] = []
-      while (i < lines.length && lines[i].trim().startsWith('|')) {
-        tableLines.push(lines[i])
-        i++
-      }
-      elements.push(<TableBlock key={`t${i}`} lines={tableLines} />)
-      continue
-    }
-    // Unordered list
-    if (/^[-*]\s+/.test(trimmed)) {
-      const items: string[] = []
-      while (i < lines.length && /^[-*]\s+/.test(lines[i].trim())) {
-        items.push(lines[i].trim().replace(/^[-*]\s+/, ''))
-        i++
-      }
-      elements.push(<ul key={`ul${i}`} className="md-list">{items.map(function (item, j) { return <li key={j} dangerouslySetInnerHTML={{ __html: inlineMd(item) }} /> })}</ul>)
-      continue
-    }
-    // Ordered list
-    if (/^\d+\.\s+/.test(trimmed)) {
-      const items: string[] = []
-      while (i < lines.length && /^\d+\.\s+/.test(lines[i].trim())) {
-        items.push(lines[i].trim().replace(/^\d+\.\s+/, ''))
-        i++
-      }
-      elements.push(<ol key={`ol${i}`} className="md-list md-olist">{items.map(function (item, j) { return <li key={j} dangerouslySetInnerHTML={{ __html: inlineMd(item) }} /> })}</ol>)
-      continue
-    }
-    // Paragraph: collect until a structural element or blank line
-    const paraLines: string[] = []
-    while (i < lines.length) {
-      const l = lines[i].trim()
-      if (!l) { i++; break }
-      if (/^#{1,3}\s/.test(l) || /^[-*_]{3,}\s*$/.test(l) || l.startsWith('|') || /^[-*]\s+/.test(l) || /^\d+\.\s+/.test(l) || l.startsWith('> ')) break
-      paraLines.push(lines[i])
-      i++
-    }
-    if (paraLines.length) {
-      elements.push(<p key={`p${i}`} className="md-p" dangerouslySetInnerHTML={{ __html: paraLines.map(function (l) { return inlineMd(l) }).join('<br/>') }} />)
-    }
-  }
-  return <>{elements}</>
-}
-
-function CodeBlock({ lang, code }: { lang: string; code: string }) {
-  const [copied, setCopied] = useState(false)
-  if (!code.trim() && !lang) return null
-  const html = hljsHighlight(code, lang)
-
-  function copy() {
-    void navigator.clipboard.writeText(code).then(function () {
-      setCopied(true)
-      setTimeout(function () { setCopied(false) }, 1500)
-    })
-  }
-
-  return (
-    <div className="md-code" data-testid="code-block">
-      <div className="md-code-head">
-        <span className="md-code-lang">{lang || 'code'}</span>
-        <button type="button" className="md-code-copy" onClick={copy}>{copied ? 'Copied' : 'Copy'}</button>
-      </div>
-      <pre className="md-code-pre"><code dangerouslySetInnerHTML={{ __html: html || '&nbsp;' }} /></pre>
-    </div>
+    <pre className="y-file-diff-pre" aria-label="File diff">
+      {lines.map((line, index) => {
+        const added = line.startsWith('+') && !line.startsWith('+++')
+        const removed = line.startsWith('-') && !line.startsWith('---')
+        const meta = line.startsWith('@@') || line.startsWith('***') || line.startsWith('---') || line.startsWith('+++')
+        const marker = added ? '+' : removed ? '-' : meta ? '·' : ' '
+        const text = added || removed ? line.slice(1) : line
+        return (
+          <span key={`${index}-${line}`} className={`tool-diff-line${added ? ' tool-diff-add' : removed ? ' tool-diff-del' : ''}`}>
+            <span className="tool-diff-ln">{meta ? '' : index + 1}</span>
+            <span className="tool-diff-gutter">{marker}</span>
+            <code>{text || ' '}</code>
+          </span>
+        )
+      })}
+    </pre>
   )
 }
 
@@ -1034,19 +932,33 @@ function Icon({ name, size = 16 }: { name: string; size?: number }) {
   if (name === 'plugins')
     return (
       <svg style={s} viewBox="0 0 20 20" fill="none" aria-hidden>
-        <path
-          d="M8.5 3.5h3l2.2 2.2v3.1l-2.2 2.2h-3L6.3 8.8V5.7L8.5 3.5z"
-          stroke="currentColor"
-          strokeWidth={sw}
-          strokeLinejoin="round"
-        />
-        <circle cx="10" cy="7.5" r="1.1" fill="currentColor" />
+        <rect x="3.5" y="3.5" width="5" height="5" rx="1.2" stroke="currentColor" strokeWidth={sw} />
+        <rect x="11.5" y="3.5" width="5" height="5" rx="1.2" stroke="currentColor" strokeWidth={sw} />
+        <rect x="3.5" y="11.5" width="5" height="5" rx="1.2" stroke="currentColor" strokeWidth={sw} />
+        <path d="M12 14h4M14 12v4" stroke="currentColor" strokeWidth={sw} strokeLinecap="round" />
       </svg>
     )
   if (name === 'auto')
     return (
       <svg style={s} viewBox="0 0 20 20" fill="none" aria-hidden>
-        <path d="M11 3L5 11h4l-1 6 6-8h-4l1-6z" stroke="currentColor" strokeWidth={sw} strokeLinejoin="round" />
+        <path d="M5 6.5h4.2M10.8 6.5H15M5 13.5h4.2M10.8 13.5H15" stroke="currentColor" strokeWidth={sw} strokeLinecap="round" />
+        <circle cx="10" cy="6.5" r="1.4" stroke="currentColor" strokeWidth={sw} />
+        <circle cx="10" cy="13.5" r="1.4" stroke="currentColor" strokeWidth={sw} />
+      </svg>
+    )
+  if (name === 'model')
+    return (
+      <svg style={s} viewBox="0 0 20 20" fill="none" aria-hidden>
+        <path d="M10 3v14M3 10h14M5.05 5.05l9.9 9.9M14.95 5.05l-9.9 9.9" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" />
+      </svg>
+    )
+  if (name === 'effort')
+    return (
+      <svg style={s} viewBox="0 0 20 20" fill="none" aria-hidden>
+        <rect x="2.5" y="13.5" width="3" height="4" rx="0.8" fill="currentColor" />
+        <rect x="7" y="10" width="3" height="7.5" rx="0.8" fill="currentColor" />
+        <rect x="11.5" y="6.5" width="3" height="11" rx="0.8" fill="currentColor" />
+        <rect x="16" y="3" width="3" height="14.5" rx="0.8" fill="currentColor" />
       </svg>
     )
   if (name === 'settings')
@@ -1098,8 +1010,8 @@ function Icon({ name, size = 16 }: { name: string; size?: number }) {
   if (name === 'archive')
     return (
       <svg style={s} viewBox="0 0 20 20" fill="none" aria-hidden>
-        <path d="M4 6h12M5 6v9.5A1.5 1.5 0 006.5 17h7a1.5 1.5 0 001.5-1.5V6M4.8 3h10.4A1.8 1.8 0 0117 4.8V6H3V4.8A1.8 1.8 0 014.8 3z" stroke="currentColor" strokeWidth={sw} strokeLinejoin="round" />
-        <path d="M8 10h4" stroke="currentColor" strokeWidth={sw} strokeLinecap="round" />
+        <path d="M5 7h10M6 7v8a1.4 1.4 0 001.4 1.4h5.2A1.4 1.4 0 0014 15V7" stroke="currentColor" strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M7 4.4h6A1.4 1.4 0 0114.4 5.8V7H5.6V5.8A1.4 1.4 0 017 4.4zM8.3 10h3.4" stroke="currentColor" strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" />
       </svg>
     )
 	  if (name === 'files')
@@ -1146,6 +1058,15 @@ function Icon({ name, size = 16 }: { name: string; size?: number }) {
         <path d="M8 5L4 9l4 4M4.5 9H12a4 4 0 014 4v2" stroke="currentColor" strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" />
       </svg>
     )
+  if (name === 'goal')
+    return (
+      <svg style={s} viewBox="0 0 20 20" fill="none" aria-hidden>
+        <circle cx="10" cy="10" r="6.2" stroke="currentColor" strokeWidth={sw} />
+        <circle cx="10" cy="10" r="2.8" stroke="currentColor" strokeWidth={sw} />
+        <circle cx="10" cy="10" r="0.9" fill="currentColor" />
+        <path d="M10 3.8V2.5M16.2 10h1.3M10 16.2v1.3M3.8 10H2.5" stroke="currentColor" strokeWidth={sw} strokeLinecap="round" />
+      </svg>
+    )
   if (name === 'copy')
     return (
       <svg style={s} viewBox="0 0 20 20" fill="none" aria-hidden>
@@ -1167,6 +1088,40 @@ function Icon({ name, size = 16 }: { name: string; size?: number }) {
       </svg>
     )
   return null
+}
+
+function effortBarCount(effort: string, maxBars: number): number {
+  const index = EFFORTS.indexOf(effort)
+  return Math.min(maxBars, index === -1 ? 2 : index + 1)
+}
+
+function EffortBars({ effort, maxBars = 5, size = 15 }: { effort: string; maxBars?: number; size?: number }) {
+  const bars = Array.from({ length: Math.max(1, maxBars) }, function (_, index) { return index })
+  const active = effortBarCount(effort, bars.length)
+  const s = { width: size, height: size, display: 'block', flexShrink: 0 } as CSSProperties
+  const barWidth = bars.length === 4 ? 2.5 : 2.25
+  const gap = bars.length === 4 ? 4.05 : 3.45
+  const startX = bars.length === 4 ? 3 : 2.4
+  return (
+    <svg style={s} viewBox="0 0 20 20" fill="none" aria-hidden>
+      {bars.map(function (index) {
+        const height = bars.length === 4 ? 4.5 + index * 3.1 : 4 + index * 2.6
+        const y = 17 - height
+        return (
+          <rect
+            key={index}
+            x={startX + index * gap}
+            y={y}
+            width={barWidth}
+            height={height}
+            rx="0.8"
+            fill="currentColor"
+            opacity={index < active ? 1 : 0.28}
+          />
+        )
+      })}
+    </svg>
+  )
 }
 
 function EngineMark({ id, logoUrl, size = 18 }: { id: string; logoUrl?: string; size?: number }) {
@@ -1195,15 +1150,20 @@ function EngineMark({ id, logoUrl, size = 18 }: { id: string; logoUrl?: string; 
         background: 'rgba(255,255,255,0.06)'
       }}
     >
-      {id === 'codex' ? 'O' : 'A'}
+      {id === 'codex' ? 'O' : 'C'}
     </span>
   )
+}
+
+function engineLogoFor(engineId: string, catalog: EngineModelCatalog[]): string | undefined {
+  return catalog.find((item) => item.engine === engineId)?.logoUrl
 }
 
 function YDropdown<T extends string>({
   value,
   options,
   disabled,
+  title,
   renderLabel,
   renderItem,
   onChange
@@ -1211,6 +1171,7 @@ function YDropdown<T extends string>({
   value: T
   options: Array<{ id: T; label: string }>
   disabled?: boolean
+  title?: string
   renderLabel?: (id: T, label: string) => React.ReactNode
   renderItem?: (id: T, label: string, active: boolean) => React.ReactNode
   onChange: (id: T) => void
@@ -1230,7 +1191,14 @@ function YDropdown<T extends string>({
 
   return (
     <div ref={ref} className={'y-drop' + (open ? ' is-open' : '')}>
-      <button type="button" className="y-drop-btn" disabled={disabled} onClick={function () { setOpen(function (o) { return !o }) }}>
+      <button
+        type="button"
+        className="y-drop-btn"
+        disabled={disabled}
+        title={title}
+        aria-label={title}
+        onClick={function () { setOpen(function (o) { return !o }) }}
+      >
         {renderLabel
           ? renderLabel(value, current?.label ?? value)
           : <span className="y-drop-label">{current?.label ?? value}</span>}
@@ -1257,18 +1225,6 @@ function YDropdown<T extends string>({
   )
 }
 
-const AssistantBody = memo(function AssistantBody({ text, streaming = false }: { text: string; streaming?: boolean }) {
-  const blocks = splitBlocks(normalizeMarkdownFences(text))
-  return (
-    <div className={'md-body' + (streaming ? ' is-streaming' : '')}>
-      {blocks.map(function (b, i) {
-        if (b.kind === 'code') return <div key={i}><CodeBlock lang={b.lang || ''} code={b.value} /></div>
-        return <div key={i}><TextBlock text={b.value} /></div>
-      })}
-    </div>
-  )
-})
-
 function MarkdownCode({ className, children }: { className?: string; children?: React.ReactNode }) {
   const code = String(children ?? '').replace(/\n$/, '')
   const language = className?.match(/language-([^\s]+)/)?.[1] ?? ''
@@ -1277,127 +1233,9 @@ function MarkdownCode({ className, children }: { className?: string; children?: 
   return <code className={className} dangerouslySetInnerHTML={{ __html: hljsHighlight(code, language) || '&nbsp;' }} />
 }
 
-const ThinkingBlock = memo(function ThinkingBlock({ message }: { message: Msg }) {
-  return (
-    <details className="y-thinking" open={message.streaming ? true : undefined} data-testid="thinking-block">
-      <summary><Icon name="brain" size={15} /><span>Thinking</span><Icon name="chevron" size={12} /></summary>
-      <div className="y-thinking-body">{message.text}</div>
-    </details>
-  )
-})
-
-const ToolActivity = memo(function ToolActivity({ message }: { message: Msg }) {
-  const verb = message.verb || toolVerbFromName(message.name || 'tool')
-  const stat = diffStat(message.body)
-  const targetFile = toolTargetFile(message.target)
-  const showDiff = !message.streaming && !!message.body && (message.body.includes('\n- ') || message.body.startsWith('- ') || message.body.includes('\n+ '))
-  const isCommand = /run|shell|bash|terminal/i.test(verb)
-  const canExpand = !message.streaming && Boolean(message.body || (isCommand && message.target))
-  const line = (
-    <div className="tool-activity-line">
-      <span className="tool-activity-icon"><Icon name={toolIconName(verb, message.name)} size={14} /></span>
-      <span className="tool-activity-verb">{verb}</span>
-      {message.target ? (
-        <span className="tool-activity-target">
-          {targetFile ? <span className="tool-activity-file-icon"><FileIcon name={targetFile} size={15} /></span> : null}
-          <span>{message.target}</span>
-        </span>
-      ) : null}
-      {stat ? <span className="tool-activity-stat"><span className="tool-stat-add">+{stat.added}</span><span className="tool-stat-del">-{stat.removed}</span></span> : null}
-      {canExpand ? <span className="tool-activity-chevron"><Icon name="chevron" size={11} /></span> : null}
-    </div>
-  )
-  if (!canExpand) return <div className="tool-activity">{line}</div>
-  if (!showDiff) {
-    return (
-      <details className="tool-activity is-collapsible">
-        <summary>{line}</summary>
-        <div className={'tool-activity-detail tool-activity-plain' + (targetFile ? ' has-file' : '')}>
-          {isCommand && message.target ? <div className="tool-activity-command">$ {message.target}</div> : null}
-          {message.body ? (
-            <pre><code dangerouslySetInnerHTML={{
-              __html: targetFile
-                ? hljsHighlight(message.body, codeFileLang(targetFile))
-                : esc(message.body)
-            }} /></pre>
-          ) : null}
-        </div>
-      </details>
-    )
-  }
-  const lines = message.body!.split('\n').filter(Boolean).map((value) => {
-    const del = value.startsWith('- ')
-    const add = value.startsWith('+ ')
-    return { del, add, raw: del || add || value.startsWith('  ') ? value.slice(2) : value }
-  })
-  const commonIndent = lines.reduce<number | null>((min, item) => {
-    if (!item.raw.trim()) return min
-    const indent = item.raw.match(/^ */)?.[0].length ?? 0
-    return min === null ? indent : Math.min(min, indent)
-  }, null) ?? 0
-  return (
-    <details className="tool-activity is-collapsible">
-      <summary>{line}</summary>
-      <div className="tool-activity-detail">
-        {lines.map(({ del, add, raw }, index) => {
-          const text = commonIndent > 0 ? raw.slice(commonIndent) : raw
-          let lineNo = 1
-          for (const previous of lines.slice(0, index)) if (!previous.del) lineNo += 1
-          return (
-            <div key={index} className={'tool-diff-line' + (del ? ' tool-diff-del' : add ? ' tool-diff-add' : '')}>
-              <span className="tool-diff-ln">{lineNo}</span>
-              <span className="tool-diff-gutter">{del ? '-' : add ? '+' : ' '}</span>
-              <code dangerouslySetInnerHTML={{ __html: hljsHighlight(text, 'typescript') }} />
-            </div>
-          )
-        })}
-      </div>
-    </details>
-  )
-})
-
-function WorkSummary({ work, durationMs, interrupted }: { work: Array<{ message: Msg; index: number }>; durationMs?: number; interrupted?: boolean }) {
-  return (
-    <details className="y-work-log" data-testid="work-log">
-      <summary><span>{interrupted ? 'Interrupted after' : 'Worked for'} {formatDuration(durationMs)}</span><Icon name="chevron" size={13} /></summary>
-      <div className="y-work-body">
-        {work.map(({ message, index }) => {
-          if (message.role === 'assistant') return <div key={index} className="y-work-narration"><AssistantBody text={message.text ?? ''} /></div>
-          if (message.role === 'thinking') return <ThinkingBlock key={index} message={message} />
-          if (message.role === 'tool') return message.system ? <div key={index} className="y-tool-note">{message.name}</div> : <ToolActivity key={index} message={message} />
-          return null
-        })}
-      </div>
-    </details>
-  )
-}
-
-function EditedFilesSummary({ work }: { work: Array<{ message: Msg; index: number }> }) {
-  const edited = new Map<string, { added: number; removed: number }>()
-  for (const entry of work) {
-    if (!isEditableToolMessage(entry.message) || !entry.message.target) continue
-    const stat = diffStat(entry.message.body) ?? { added: 0, removed: 0 }
-    const current = edited.get(entry.message.target) ?? { added: 0, removed: 0 }
-    edited.set(entry.message.target, { added: current.added + stat.added, removed: current.removed + stat.removed })
-  }
-  if (!edited.size) return null
-  const totals = Array.from(edited.values()).reduce((sum, stat) => ({ added: sum.added + stat.added, removed: sum.removed + stat.removed }), { added: 0, removed: 0 })
-  return (
-    <div className="y-edited-files" data-testid="edited-files">
-      <div className="y-edited-files-head"><strong>Edited {edited.size} {edited.size === 1 ? 'file' : 'files'}</strong><span><b>+{totals.added}</b> <i>-{totals.removed}</i></span></div>
-      {Array.from(edited).map(([file, stat]) => <div key={file} className="y-edited-file"><span>{file}</span><span><b>+{stat.added}</b> <i>-{stat.removed}</i></span></div>)}
-    </div>
-  )
-}
-
-function isEditableToolMessage(message: Msg): boolean {
-  if (message.role !== 'tool' || message.system) return false
-  const verb = (message.verb || toolVerbFromName(message.name || 'tool')).toLowerCase()
-  return verb === 'edit' || verb === 'write'
-}
-
-function hasCollapsibleWork(work: Array<{ message: Msg; index: number }>): boolean {
-  return work.some(({ message }) => message.role === 'tool' && !message.system)
+function langFromToolTarget(target?: string): string {
+  const targetFile = toolTargetFile(target)
+  return targetFile ? codeFileLang(targetFile) : 'typescript'
 }
 
 function SettingsToggle({ checked, onChange }: { checked: boolean; onChange: (checked: boolean) => void }) {
@@ -1433,9 +1271,261 @@ function SettingsView({
     <div className="y-settings-view" data-testid="settings-view">
       <div className="y-settings-content">
         <section className="y-settings-section"><h2>General</h2><div className="y-settings-card"><div><strong>Completion sound</strong><p>Play a subtle sound when a long-running agent turn finishes.</p></div><SettingsToggle checked={soundEnabled} onChange={onSoundEnabled} /></div></section>
-        <section className="y-settings-section"><h2>Agents</h2><p className="y-settings-lead">Run native health checks without y changing the CLI configuration.</p><div className="y-agent-grid">{engines.map((engine) => { const label = LABELS[engine] || engine; return <div className="y-agent-card" key={engine}><strong>{label}</strong><span>Detected</span><div className="y-settings-actions"><button type="button" className="y-settings-action" onClick={() => onAuthStatus(engine)}>Auth status</button><button type="button" className="y-settings-action" onClick={() => onDoctor(engine)}>Doctor</button></div></div> })}</div></section>
-        <section className="y-settings-section"><h2>MCP & Plugins</h2><p className="y-settings-lead">Open each engine's native plugin and MCP views. y displays the real CLI output in the terminal.</p><div className="y-agent-grid">{engines.map((engine) => { const entry = catalog.find((item) => item.engine === engine); const label = entry?.label || LABELS[engine] || engine; return <div className="y-agent-card" key={engine}><strong>{label}</strong><p>Inspect native integrations for this engine.</p><div className="y-settings-actions"><button type="button" className="y-settings-action" onClick={() => onOpenPlugins(engine)}>Plugins</button><button type="button" className="y-settings-action" onClick={() => onOpenMcp(engine)}>MCP</button></div></div> })}</div></section>
+        <section className="y-settings-section"><h2>Agents</h2><p className="y-settings-lead">Run native health checks without y changing the CLI configuration.</p><div className="y-agent-grid">{engines.map((engine) => { const entry = catalog.find((item) => item.engine === engine); const label = entry?.label || LABELS[engine] || engine; return <div className="y-agent-card" key={engine}><div className="y-agent-title"><EngineMark id={engine} logoUrl={entry?.logoUrl} size={18} /><strong>{label}</strong></div><span>Detected</span><div className="y-settings-actions"><button type="button" className="y-settings-action" onClick={() => onAuthStatus(engine)}>Auth status</button><button type="button" className="y-settings-action" onClick={() => onDoctor(engine)}>Doctor</button></div></div> })}</div></section>
+        <section className="y-settings-section"><h2>MCP & Plugins</h2><p className="y-settings-lead">Open each engine's native plugin and MCP views. y displays the real CLI output in the terminal.</p><div className="y-agent-grid">{engines.map((engine) => { const entry = catalog.find((item) => item.engine === engine); const label = entry?.label || LABELS[engine] || engine; return <div className="y-agent-card" key={engine}><div className="y-agent-title"><EngineMark id={engine} logoUrl={entry?.logoUrl} size={18} /><strong>{label}</strong></div><p>Inspect native integrations for this engine.</p><div className="y-settings-actions"><button type="button" className="y-settings-action" onClick={() => onOpenPlugins(engine)}>Plugins</button><button type="button" className="y-settings-action" onClick={() => onOpenMcp(engine)}>MCP</button></div></div> })}</div></section>
         <section className="y-settings-section"><h2>Modify Chat</h2><div className="y-settings-card"><div><strong>Reset to original app</strong><p>Restore the bundled y chat interface and replace the current customized Userland app.</p></div><button type="button" className="y-settings-action danger" onClick={onResetOriginalApp}>Reset</button></div></section>
+      </div>
+    </div>
+  )
+}
+
+function OnboardingView({
+  catalog,
+  onFinish,
+  onOpenProject
+}: {
+  catalog: EngineModelCatalog[]
+  onFinish: () => void
+  onOpenProject: () => void
+}) {
+  const [step, setStep] = useState(0)
+  const [authMethod, setAuthMethod] = useState(() => window.localStorage.getItem(ONBOARDING_AUTH_KEY) || '')
+  const [authEmail, setAuthEmail] = useState('')
+  const [authStatus, setAuthStatus] = useState('')
+  const [authBusy, setAuthBusy] = useState(false)
+  const [analyticsOn] = useState(() => analyticsEnabled())
+  const [cliResult, setCliResult] = useState<OnboardingCliCheckResult | null>(null)
+  const [checking, setChecking] = useState(false)
+  const [copied, setCopied] = useState('')
+  const steps = ['Account', 'Agents', 'Guide']
+
+  useEffect(() => {
+    trackEvent('onboarding_viewed')
+  }, [])
+
+  async function chooseAuth(method: string): Promise<void> {
+    setAuthMethod(method)
+    window.localStorage.setItem(ONBOARDING_AUTH_KEY, method)
+    trackEvent('onboarding_auth_selected', { provider: method, authProvider: 'hexclave' })
+    if (method === 'skip') {
+      setAuthStatus('Skipped sign-in for now. You can continue setup and sign in later from settings.')
+      return
+    }
+    if (method !== 'google' && method !== 'github') {
+      setAuthStatus('')
+      return
+    }
+    setAuthBusy(true)
+    setAuthStatus(`Opening Hexclave sign-in in your browser. Choose ${method === 'google' ? 'Google' : 'GitHub'} there, then return to y automatically.`)
+    try {
+      const result = await window.y.auth.signInWithOAuth(method)
+      setAuthStatus(result.ok ? 'Hexclave sign-in opened in your browser.' : result.error || 'Could not start Hexclave auth.')
+    } finally {
+      setAuthBusy(false)
+    }
+  }
+
+  async function sendEmailAuth(): Promise<void> {
+    const email = authEmail.trim()
+    if (!email || !email.includes('@')) {
+      setAuthStatus('Enter a valid email address.')
+      return
+    }
+    setAuthBusy(true)
+    setAuthStatus('Sending Hexclave email sign-in...')
+    try {
+      const result = await window.y.auth.sendMagicLink(email)
+      setAuthStatus(result.ok ? 'Check your email for the Hexclave sign-in link.' : result.error || 'Could not send email sign-in.')
+      trackEvent('onboarding_email_auth_requested', { ok: result.ok })
+    } finally {
+      setAuthBusy(false)
+    }
+  }
+
+  async function runCliCheck(): Promise<void> {
+    setChecking(true)
+    try {
+      const result = await window.y.onboarding.checkCli()
+      setCliResult(result)
+    } finally {
+      setChecking(false)
+    }
+  }
+
+  async function copyCommand(command: string, label: string): Promise<void> {
+    await navigator.clipboard.writeText(command)
+    setCopied(label)
+    window.setTimeout(() => setCopied(''), 1400)
+    trackEvent('onboarding_install_command_copied', { label })
+  }
+
+  function complete(): void {
+    window.localStorage.setItem(ONBOARDING_DONE_KEY, 'true')
+    trackEvent('onboarding_completed', {
+      authMethod: authMethod || 'skipped',
+      analyticsEnabled: analyticsOn,
+      cliChecked: Boolean(cliResult)
+    })
+    onFinish()
+  }
+
+  if (step === 0) {
+    return (
+      <div className="y-login" data-testid="onboarding">
+        <div className="y-login-drag" />
+        <div className="y-login-left">
+          <div className="y-login-body">
+            <h1 className="y-login-headline">There are many coding agent apps out there, this one is yours.</h1>
+            <p className="y-login-sub">Sign in or create an account to get started.</p>
+            <div className="y-login-form">
+              <input
+                type="email"
+                className="y-login-input"
+                value={authEmail}
+                placeholder="Email address"
+                onChange={(e) => setAuthEmail(e.currentTarget.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && authEmail.includes('@')) void sendEmailAuth()
+                }}
+                disabled={authBusy}
+              />
+              <button
+                type="button"
+                className="y-login-magic"
+                onClick={() => void sendEmailAuth()}
+                disabled={authBusy}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>
+                {authBusy ? 'SENDING...' : 'SEND MAGIC LINK'}
+              </button>
+              <div className="y-login-or"><span>OR</span></div>
+              <button type="button" className="y-login-oauth" onClick={() => void chooseAuth('google')} disabled={authBusy}>
+                <svg width="16" height="16" viewBox="0 0 24 24"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>
+                CONTINUE WITH GOOGLE
+              </button>
+              <button type="button" className="y-login-oauth" onClick={() => void chooseAuth('github')} disabled={authBusy}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+                CONTINUE WITH GITHUB
+              </button>
+              {authStatus ? <div className="y-login-status">{authStatus}</div> : null}
+              {authStatus && !authBusy ? (
+                <button type="button" className="y-login-continue" onClick={() => setStep(1)}>
+                  Continue setup →
+                </button>
+              ) : null}
+            </div>
+            <button type="button" className="y-login-skip" onClick={() => { void chooseAuth('skip'); setStep(1) }}>
+              Skip for now
+            </button>
+          </div>
+        </div>
+        <div className="y-login-right" aria-hidden="true" />
+      </div>
+    )
+  }
+
+  return (
+    <div className="y-onboarding" data-testid="onboarding">
+      <div className="y-onboarding-card">
+        <div className="y-onboarding-brand">
+          <BinaryYMark />
+          <div>
+            <p className="y-onboarding-kicker">Welcome to y</p>
+            <h1>Set up your coding agents.</h1>
+            <p>Verify Claude Code and Codex, then start from the chat-first workflow.</p>
+          </div>
+        </div>
+        <div className="y-onboarding-steps" aria-label="Onboarding progress">
+          {steps.map((label, index) => (
+            <button
+              type="button"
+              key={label}
+              className={'y-onboarding-step' + (index === step ? ' active' : '') + (index < step ? ' done' : '')}
+              onClick={() => setStep(index)}
+            >
+              <span>{index + 1}</span>
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {step === 1 ? (
+          <section className="y-onboarding-panel">
+            <div className="y-onboarding-row">
+              <div>
+                <h2>Agent CLIs</h2>
+                <p className="y-onboarding-muted">y runs the official local CLIs. Check both once before your first project.</p>
+              </div>
+              <button type="button" className="y-onboarding-primary" onClick={() => void runCliCheck()} disabled={checking}>
+                {checking ? 'Checking...' : cliResult ? 'Check again' : 'Check installs'}
+              </button>
+            </div>
+            <div className="y-cli-grid">
+              {(cliResult?.tools ?? [
+                {
+                  id: 'claude-code',
+                  label: 'Claude Code',
+                  command: 'claude',
+                  installed: false,
+                  installCommand: 'curl -fsSL https://claude.ai/install.sh | bash',
+                  authCommand: 'claude auth login',
+                  docsUrl: 'https://docs.anthropic.com/en/docs/claude-code/quickstart'
+                },
+                {
+                  id: 'codex',
+                  label: 'Codex',
+                  command: 'codex',
+                  installed: false,
+                  installCommand: 'npm install -g @openai/codex',
+                  authCommand: 'codex login',
+                  docsUrl: 'https://github.com/openai/codex'
+                }
+              ] as OnboardingCliToolStatus[]).map((tool) => (
+                <div key={tool.id} className={'y-cli-card' + (tool.installed ? ' installed' : '')}>
+                  <div className="y-cli-head">
+                    <EngineMark id={tool.id} logoUrl={engineLogoFor(tool.id, catalog)} size={22} />
+                    <div>
+                      <strong>{tool.label}</strong>
+                      <span>{tool.installed ? (tool.version || 'Installed') : 'Not detected yet'}</span>
+                    </div>
+                  </div>
+                  <code>{tool.installed ? tool.authCommand : tool.installCommand}</code>
+                  <button type="button" className="y-onboarding-secondary" onClick={() => void copyCommand(tool.installed ? tool.authCommand : tool.installCommand, tool.label)}>
+                    {copied === tool.label ? 'Copied' : tool.installed ? 'Copy login' : 'Copy install'}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
+
+        {step === 2 ? (
+          <section className="y-onboarding-panel">
+            <h2>How y works</h2>
+            <div className="y-guide-grid">
+              <div><strong>Chat first</strong><span>Open a folder, ask questions, and let <span className="y-guide-engines"><EngineMark id="claude-code" logoUrl={engineLogoFor('claude-code', catalog)} size={14} />Claude Code <EngineMark id="codex" logoUrl={engineLogoFor('codex', catalog)} size={14} />Codex</span> work in the main composer.</span></div>
+              <div><strong>Modify safely</strong><span>Use Modify to reshape only Userland. The protected Kernel keeps recovery, auth, and safety rails alive.</span></div>
+              <div><strong>Review changes</strong><span>Tool calls, edited files, undo, and the revert graph stay visible so changes are auditable.</span></div>
+              <div><strong>Native commands</strong><span>/mcp, /plugins, terminal sessions, and engine auth remain delegated to the real CLIs.</span></div>
+            </div>
+            <div className="y-onboarding-actions">
+              <button type="button" className="y-onboarding-secondary" onClick={onOpenProject}>Open folder</button>
+              <button type="button" className="y-onboarding-primary" onClick={complete}>Start using y</button>
+            </div>
+          </section>
+        ) : null}
+
+        <div className="y-onboarding-footer">
+          <button type="button" className="y-onboarding-secondary" onClick={() => setStep(Math.max(0, step - 1))} disabled={step === 0}>Back</button>
+          {step < 2 ? (
+            <button type="button" className="y-onboarding-primary" onClick={() => {
+              trackEvent('onboarding_step_completed', { step: steps[step] })
+              setStep(step + 1)
+            }}>
+              Continue
+            </button>
+          ) : null}
+        </div>
       </div>
     </div>
   )
@@ -1445,6 +1535,7 @@ export default function Chat() {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [searchOpen, setSearchOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [onboardingDone, setOnboardingDone] = useState(() => window.localStorage.getItem(ONBOARDING_DONE_KEY) === 'true')
   const [soundEnabled, setSoundEnabled] = useState(() => storedBoolean('y.settings.sound', true))
   const [searchQuery, setSearchQuery] = useState('')
   const [toast, setToast] = useState('')
@@ -1460,6 +1551,7 @@ export default function Chat() {
   const [sessionId, setSessionId] = useState<string | null>(PREVIEW ? 'preview' : null)
   const [title, setTitle] = useState('New chat')
   const [goal, setGoal] = useState('')
+  const [composerMode, setComposerMode] = useState<'chat' | 'goal'>('chat')
   const [messages, setMessages] = useState<Msg[]>([])
   const [input, setInput] = useState('')
   const [hasComposerInput, setHasComposerInput] = useState(false)
@@ -1475,6 +1567,7 @@ export default function Chat() {
   const [fileContent, setFileContent] = useState('')
   const [savedFileContent, setSavedFileContent] = useState('')
   const [fileMode, setFileMode] = useState<FileMode>('preview')
+  const [activeFileDiff, setActiveFileDiff] = useState('')
   const [fileStatus, setFileStatus] = useState('')
   const [engineCommands, setEngineCommands] = useState<Array<{ name: string; source?: string }>>([])
   const [composerTerminal, setComposerTerminal] = useState<ComposerTerminal | null>(null)
@@ -1530,6 +1623,12 @@ export default function Chat() {
     const id = window.setInterval(() => setElapsedTick(Date.now()), 1000)
     return () => window.clearInterval(id)
   }, [busy, activeChatId])
+
+  useEffect(() => {
+    if (engineId === 'codex' || composerMode !== 'goal') return
+    setComposerMode('chat')
+    setComposerInput('')
+  }, [engineId, composerMode])
 
   useEffect(() => window.localStorage.setItem('y.settings.sound', String(soundEnabled)), [soundEnabled])
 
@@ -1628,11 +1727,26 @@ export default function Chat() {
     return text.length >= PASTE_ATTACHMENT_MIN_CHARS || text.split(/\r\n|\r|\n/).length >= PASTE_ATTACHMENT_MIN_LINES
   }
 
-  function addPastedTextAttachment(text: string) {
+  function addPastedTextAttachment(text: string): boolean {
+    const size = new Blob([text]).size
+    const totalSize = pastedAttachments.reduce(function (sum, item) { return sum + item.size }, 0)
+    if (pastedAttachments.length >= MAX_PASTED_ATTACHMENTS) {
+      showToast(`You can attach up to ${MAX_PASTED_ATTACHMENTS} pasted text blocks.`)
+      return false
+    }
+    if (size > MAX_PASTED_ATTACHMENT_BYTES) {
+      showToast('That pasted text is too large to attach.')
+      return false
+    }
+    if (totalSize + size > MAX_TOTAL_PASTED_ATTACHMENT_BYTES) {
+      showToast('Pasted text attachments are already near the context limit.')
+      return false
+    }
     setPastedAttachments((items) => {
       const index = items.length + 1
-      return items.concat([{ id: `paste-${Date.now()}-${index}`, name: `pasted-text-${index}.txt`, text, size: new Blob([text]).size }])
+      return items.concat([{ id: `paste-${Date.now()}-${index}`, name: `pasted-text-${index}.txt`, text, size }])
     })
+    return true
   }
 
   function handleComposerPaste(event: ClipboardEvent<HTMLTextAreaElement>) {
@@ -2104,6 +2218,19 @@ export default function Chat() {
     return base.concat([{ role: 'assistant', text: chunk, engineId: sourceEngineId, streaming: true }])
   }
 
+  function finalizeInterruptedTurn(list: Msg[], durationMs?: number, checkpointId?: string): Msg[] {
+    const base = sealAssistantStreaming(settleTools(sealAllThinking(list)))
+    const lastAssistantIndex = base.findLastIndex((message) => message.role === 'assistant')
+    if (lastAssistantIndex !== -1) {
+      const next = base.slice()
+      const message = next[lastAssistantIndex]
+      next[lastAssistantIndex] = { ...message, checkpointId: checkpointId ?? message.checkpointId, durationMs, interrupted: true }
+      return next
+    }
+    const fallbackEngine = runtimesRef.current[activeRef.current.chatId || '']?.engineId || engineId
+    return base.concat([{ role: 'assistant', text: 'Interrupted.', engineId: fallbackEngine, checkpointId, durationMs, interrupted: true }])
+  }
+
   function flushStreamBuffer(chatId: string, force = false) {
     const frame = streamFramesRef.current[chatId]
     if (frame) window.clearTimeout(frame)
@@ -2119,16 +2246,20 @@ export default function Chat() {
         engineId: buffered.engineId,
         firstAt: next.visible ? Date.now() : buffered.firstAt
       }
+      streamFramesRef.current[chatId] = window.setTimeout(() => flushStreamBuffer(chatId), STREAM_FLUSH_MS)
     }
   }
 
   function queueStreamText(chatId: string, text: string, sourceEngineId: string) {
+    const frame = streamFramesRef.current[chatId]
+    if (frame) window.clearTimeout(frame)
     const buffered = streamBuffersRef.current[chatId]
     streamBuffersRef.current[chatId] = {
       text: (buffered?.text ?? '') + text,
       engineId: buffered?.engineId ?? sourceEngineId,
       firstAt: buffered?.firstAt ?? Date.now()
     }
+    streamFramesRef.current[chatId] = window.setTimeout(() => flushStreamBuffer(chatId), STREAM_FLUSH_MS)
   }
 
   function scrollCommittedTextIntoView(chatId: string) {
@@ -2236,6 +2367,61 @@ export default function Chat() {
     return chatId ? (runtimesRef.current[chatId]?.sessionId || null) : sidRef.current
   }
 
+  function applyNativeGoalResult(value: string | undefined): string {
+    const nextGoal = (value ?? '').trim()
+    setGoal(nextGoal)
+    persistChatMeta(activeRef.current.chatId, { goal: nextGoal })
+    return nextGoal
+  }
+
+  function clearGoalAfterTurn(chatId: string | undefined, sessionIdToClear?: string): void {
+    setGoal('')
+    persistChatMeta(chatId, { goal: '' })
+    if (!sessionIdToClear || PREVIEW) return
+    void window.y.engine.command(sessionIdToClear, { name: 'goal', action: 'clear' })
+  }
+
+  function runGoalCommand(command: Extract<EngineCommand, { name: 'goal' }>, fallbackObjective = ''): void {
+    if (engineId !== 'codex') {
+      addSystemNote('Native goals are available for Codex only. Claude Code does not expose an equivalent persistent goal command through this adapter.')
+      return
+    }
+    if (command.action === 'set') {
+      const objective = command.value?.trim() ?? ''
+      if (!objective) {
+        addSystemNote('Goal text is required.')
+        return
+      }
+      if (objective.length > 4000) {
+        addSystemNote('Codex goals must be at most 4,000 characters. Put longer instructions in a file and point the goal at that file.')
+        return
+      }
+    }
+    const sid = currentSessionId()
+    if (!sid) {
+      addSystemNote('Codex goals attach to the active Codex thread. Wait for the session to start, then set the goal again.')
+      return
+    }
+    void window.y.engine.command(sid, command).then((res) => {
+      if (!res.ok) {
+        addSystemNote(commandFailureMessage(command, res.error, 'Codex goal command failed.'))
+        return
+      }
+      const nextGoal = applyNativeGoalResult(command.action === 'clear' ? '' : res.value ?? fallbackObjective)
+      addSystemNote(res.message || (nextGoal ? `Codex goal active: ${nextGoal}` : 'No Codex goal is set.'))
+      trackEvent('chat_goal_updated', { engineId, hasGoal: Boolean(nextGoal), source: 'native', status: res.status })
+    })
+  }
+
+  function beginGoalComposer(): void {
+    if (composerMode === 'goal') {
+      setComposerMode('chat')
+      return
+    }
+    setComposerMode('goal')
+    window.requestAnimationFrame(() => composerInputRef.current?.focus())
+  }
+
   function updateQueuedFollowUps(updater: (queued: Record<string, QueuedFollowUp[]>) => Record<string, QueuedFollowUp[]>) {
     setQueuedFollowUps((queued) => {
       const next = updater(queued)
@@ -2268,13 +2454,31 @@ export default function Chat() {
     return start(chatEngine(chat), chatModel(chat, chatEngine(chat)), chatOptions(chat), project?.path, chatId)
   }
 
-  async function sendTextToChat(chatId: string, text: string, files: SelectedFile[] = [], pasted: PastedTextAttachment[] = []): Promise<boolean> {
+  async function sendTextToChat(chatId: string, text: string, files: SelectedFile[] = [], pasted: PastedTextAttachment[] = [], goalBacked = false): Promise<boolean> {
     const trimmed = text.trim() || (pasted.length ? 'See pasted text attachment.' : '')
     if (!trimmed) return false
     const runtime = runtimesRef.current[chatId]
     const targetSession = runtime?.sessionId || (PREVIEW ? sessionId : null)
     if (!targetSession) return false
     const { project, chat } = getChatById(chatId)
+    const targetEngine = runtime?.engineId || chatEngine(chat) || engineId
+    if (goalBacked) {
+      if (targetEngine !== 'codex') {
+        addSystemNote('Goal mode is available for Codex only.')
+        return false
+      }
+      if (trimmed.length > 4000) {
+        addSystemNote('Codex goals must be at most 4,000 characters. Put longer instructions in a file and point the goal at that file.')
+        return false
+      }
+      const goalResult = await window.y.engine.command(targetSession, { name: 'goal', action: 'set', value: trimmed })
+      if (!goalResult.ok) {
+        addSystemNote(commandFailureMessage({ name: 'goal', action: 'set', value: trimmed }, goalResult.error, 'Could not start Codex goal mode.'))
+        return false
+      }
+      applyNativeGoalResult(goalResult.value ?? trimmed)
+      trackEvent('chat_goal_started', { chatId, projectId: project?.id, engineId: targetEngine, promptLength: trimmed.length, status: goalResult.status })
+    }
     const checkpoint = await window.y.app.checkpoint(project?.id)
     if (!checkpoint.ok || !checkpoint.checkpointId) {
       addSystemNote(checkpoint.error || 'Native Git checkpoint failed. Install Git and open a Git repository.')
@@ -2288,15 +2492,24 @@ export default function Chat() {
       ? `${trimmed}\n\n${pasted.map((item) => `[attached: ${item.name}]`).join('\n')}`
       : trimmed
     updateChatMessages(chatId, (m) => m.concat([{ role: 'user', text: visibleText, checkpointId: checkpoint.checkpointId }]))
-    const chatGoal = activeRef.current.chatId === chatId ? goal : chat?.goal ?? ''
-    const requestPrompt = chatGoal ? `Current goal:\n${chatGoal}\n\nUser request:\n${trimmed}` : trimmed
     const fileSection = files.length ? `Attached files:\n${files.map((file) => `- ${file.path}`).join('\n')}` : ''
     const pastedSection = pasted.length
       ? `Attached pasted text:\n${pasted.map((item) => `--- ${item.name} (${formatBytes(item.size) || `${item.size} bytes`}) ---\n${item.text}`).join('\n\n')}`
       : ''
-    const promptParts = [fileSection, pastedSection, requestPrompt].filter(Boolean)
+    const promptParts = [fileSection, pastedSection, trimmed].filter(Boolean)
     const prompt = promptParts.join('\n\n')
     const contextualPrompt = buildContextPrompt(history, prompt)
+    trackEvent('chat_message_sent', {
+      chatId,
+      projectId: project?.id,
+      engineId: runtime?.engineId || engineId,
+      modelId,
+      promptLength: trimmed.length,
+      attachmentCount: files.length,
+      pastedAttachmentCount: pasted.length,
+      hasGoal: goalBacked || Boolean(targetEngine === 'codex' && (activeRef.current.chatId === chatId ? goal : chat?.goal ?? '')),
+      firstUserMessage
+    })
     armCompletionSound()
     setDoneChats((prev) => {
       if (!prev[chatId]) return prev
@@ -2304,7 +2517,7 @@ export default function Chat() {
       delete next[chatId]
       return next
     })
-    setRuntime(chatId, { busy: true, startedAt: Date.now(), status: '...', error: '' })
+    setRuntime(chatId, { busy: true, startedAt: Date.now(), status: '...', error: '', goalBacked })
     if (PREVIEW) {
       void window.y.engine.send(targetSession, contextualPrompt)
       return true
@@ -2313,7 +2526,7 @@ export default function Chat() {
     return true
   }
 
-  function queueFollowUp(chatId: string, text: string) {
+  function queueFollowUp(chatId: string, text: string, goalBacked = false) {
     const trimmed = text.trim()
     if (!trimmed) return
     const current = queuedFollowUpsRef.current[chatId] ?? []
@@ -2325,7 +2538,7 @@ export default function Chat() {
       const items = queued[chatId] ?? []
       return {
         ...queued,
-        [chatId]: items.concat([{ id: `${Date.now()}-${items.length}`, text: trimmed, steer: false }])
+        [chatId]: items.concat([{ id: `${Date.now()}-${items.length}`, text: trimmed, steer: false, goal: goalBacked }])
       }
     })
     setComposerInput('')
@@ -2380,7 +2593,7 @@ export default function Chat() {
       if (!remaining.length) delete next[chatId]
       return next
     })
-    void sendTextToChat(chatId, item.text)
+    void sendTextToChat(chatId, item.text, [], [], Boolean(item.goal))
   }
 
   function copyMessage(text: string) {
@@ -2417,7 +2630,41 @@ export default function Chat() {
     })
     setEditingMessage(null)
     await restartChatSession(chatId)
+    trackEvent('chat_reset_to_message', { chatId, assistantIndex: index })
     showToast('Reset conversation to this point')
+  }
+
+  async function undoTurnEdits(chatId: string, assistantIndex: number) {
+    const list = getMessagesForChat(chatId)
+    const userIndex = list.slice(0, assistantIndex).findLastIndex((message) => message.role === 'user')
+    if (userIndex === -1) {
+      addSystemNote('Could not find the message checkpoint before those edits.')
+      return
+    }
+    const checkpointId = list[userIndex].checkpointId
+    if (!checkpointId) {
+      addSystemNote('This turn has no starting code checkpoint, so it cannot undo code safely.')
+      return
+    }
+    const { project } = getChatById(chatId)
+    const restored = await window.y.app.restoreCheckpoint(project?.id, checkpointId)
+    if (!restored.ok) {
+      addSystemNote(restored.error || 'Could not restore the code checkpoint.')
+      return
+    }
+    const current = runtimesRef.current[chatId]?.sessionId
+    if (runtimesRef.current[chatId]?.busy && current && !PREVIEW) await window.y.engine.cancel(current)
+    replaceChatMessages(chatId, list.slice(0, userIndex))
+    updateQueuedFollowUps((queued) => {
+      if (!queued[chatId]) return queued
+      const next = { ...queued }
+      delete next[chatId]
+      return next
+    })
+    setEditingMessage(null)
+    await restartChatSession(chatId)
+    trackEvent('chat_undo_edits', { chatId, assistantIndex, projectId: project?.id })
+    showToast('Undid edited files')
   }
 
   function beginEditUserMessage(chatId: string, index: number, text: string) {
@@ -2506,6 +2753,7 @@ export default function Chat() {
 
 	  function closeComposerTerminal() {
 	    setTerminalDockOpen(false)
+      setComposerTerminal((term) => term?.transient ? null : term)
 	  }
 
   function commandFailureMessage(command: EngineCommand, error?: string, fallbackMessage?: string): string {
@@ -2547,7 +2795,7 @@ export default function Chat() {
     return engine === 'codex' ? 'codex login status' : 'claude auth status'
   }
 
-	  function startTerminal(initialCommand?: string, label = 'Terminal'): true {
+	  function startTerminal(initialCommand?: string, label = 'Terminal', transient = false): true {
 	    const cwd = activeRef.current.path
 	    const id = `term-${Date.now()}-${Math.random().toString(16).slice(2)}`
 	    const title = initialCommand ? `Running ${label}.` : label
@@ -2561,8 +2809,8 @@ export default function Chat() {
 	      const body = initialCommand ? `$ ${initialCommand}\r\npreview terminal\r\n` : 'preview terminal\r\n'
 	      setComposerTerminal((term) =>
 	        term
-	          ? { ...term, title, command: initialCommand ?? term.command, body: initialCommand ? term.body + body : term.body || body, running: true }
-	          : { id, title, command: initialCommand, body, running: true }
+	          ? { ...term, title, command: initialCommand ?? term.command, body: initialCommand ? term.body + body : term.body || body, running: true, transient: term.transient }
+	          : { id, title, command: initialCommand, body, running: true, transient }
 	      )
 	      return true
 	    }
@@ -2570,7 +2818,7 @@ export default function Chat() {
       addSystemNote('This build does not expose the terminal brick yet.')
       return true
     }
-    setComposerTerminal({ id, title, command: initialCommand, body: '', running: true })
+    setComposerTerminal({ id, title, command: initialCommand, body: '', running: true, transient })
     void window.y.terminal.start({ id, cwd, command: initialCommand, cols: 96, rows: 24 }).then((res) => {
       if (!res.ok) {
         const error = res.error || 'Failed to start terminal.'
@@ -2582,7 +2830,7 @@ export default function Chat() {
   }
 
   function terminalCommand(command: string, label = 'Terminal'): true {
-    return startTerminal(command, label)
+    return startTerminal(command, label, true)
   }
 
   function utilitySubcommand(arg: string): { sub: string; rest: string } {
@@ -2701,18 +2949,18 @@ export default function Chat() {
 	    }
     if (cmd === 'goal') {
       if (!arg) {
-        runNativeCommand({ name: 'goal', action: 'get' }, goal ? `Current goal: ${goal}` : 'No goal is set.')
+        runGoalCommand({ name: 'goal', action: 'get' }, goal)
+        return true
+      }
+      if (['pause', 'resume'].includes(arg.toLowerCase())) {
+        addSystemNote('Codex CLI documents /goal pause and /goal resume for the interactive CLI, but Codex app-server 0.139 exposes only thread/goal/set, thread/goal/get, and thread/goal/clear. Open the native Codex terminal if you need pause/resume.')
         return true
       }
       if (['clear', 'off', 'reset'].includes(arg.toLowerCase())) {
-        setGoal('')
-        persistChatMeta(activeRef.current.chatId, { goal: '' })
-        runNativeCommand({ name: 'goal', action: 'clear' }, 'Goal cleared.')
+        runGoalCommand({ name: 'goal', action: 'clear' })
         return true
       }
-      setGoal(arg)
-      persistChatMeta(activeRef.current.chatId, { goal: arg })
-      runNativeCommand({ name: 'goal', action: 'set', value: arg }, `Goal set: ${arg}`)
+      runGoalCommand({ name: 'goal', action: 'set', value: arg }, arg)
       return true
     }
 	    if (cmd === 'clear') {
@@ -2754,10 +3002,12 @@ export default function Chat() {
         setRuntime(chatId, { status: '' })
         queueStreamText(chatId, e.text, runtimesRef.current[chatId]?.engineId || engineId)
       } else if (e.kind === 'thinking') {
+        flushStreamBuffer(chatId, true)
         setRuntime(chatId, { status: '' })
         updateChatMessages(chatId, sealAssistantStreaming)
         queueThinkingText(chatId, e.text)
       } else if (e.kind === 'tool') {
+        flushStreamBuffer(chatId, true)
         flushThinkingBuffer(chatId)
         const runtime = runtimesRef.current[chatId]
         const existing = getMessagesForChat(chatId).some((m) => m.role === 'tool' && e.id && m.id === e.id)
@@ -2767,10 +3017,22 @@ export default function Chat() {
         seenToolEventsRef.current[signature] = true
         setRuntime(chatId, { status: '' })
         updateChatMessages(chatId, (m) => upsertTool(sealAssistantStreaming(m), e))
+        if (e.phase === 'start' || e.phase === 'end') {
+          trackEvent('chat_tool_call', {
+            chatId,
+            engineId: runtime?.engineId || engineId,
+            name: e.name,
+            verb: e.verb,
+            phase: e.phase,
+            hasTarget: Boolean(e.target)
+          })
+        }
         if (e.phase === 'end' && (queuedFollowUpsRef.current[chatId] ?? []).some((item) => item.steer)) {
           void deliverQueuedSteer(chatId)
         }
       } else if (e.kind === 'suggestion') {
+        flushStreamBuffer(chatId, true)
+        flushThinkingBuffer(chatId)
         setRuntime(chatId, { status: '' })
         updateChatMessages(chatId, (m) => m.concat([{ role: 'tool', name: `Suggested next: ${e.text}`, system: true }]))
       } else if (e.kind === 'commands') {
@@ -2778,12 +3040,19 @@ export default function Chat() {
       } else if (e.kind === 'result') {
         const runtime = runtimesRef.current[chatId]
         const durationMs = runtime?.startedAt ? Date.now() - runtime.startedAt : undefined
+        if (runtime?.goalBacked) clearGoalAfterTurn(chatId, runtime.sessionId)
         flushStreamBuffer(chatId, true)
         scrollCommittedTextIntoView(chatId)
         flushThinkingBuffer(chatId)
         const notify = e.ok && shouldPlayCompletionSound(chatId, runtime)
         seenToolEventsRef.current = {}
-        setRuntime(chatId, { busy: false, startedAt: undefined, status: '', error: e.ok ? '' : e.summary || 'The engine reported an error.' })
+        setRuntime(chatId, { busy: false, startedAt: undefined, status: '', error: e.ok ? '' : e.summary || 'The engine reported an error.', goalBacked: false })
+        trackEvent('chat_turn_completed', {
+          chatId,
+          engineId: runtime?.engineId || engineId,
+          ok: e.ok,
+          durationMs
+        })
         updateChatMessages(chatId, (m) => sealAssistantStreaming(settleTools(sealAllThinking(m))))
         if (e.ok) {
           if (notify) playCompletionSound()
@@ -2803,11 +3072,14 @@ export default function Chat() {
           })
         }
       } else if (e.kind === 'error') {
+        const runtime = runtimesRef.current[chatId]
+        if (runtime?.goalBacked) clearGoalAfterTurn(chatId, runtime.sessionId)
         flushStreamBuffer(chatId, true)
         scrollCommittedTextIntoView(chatId)
         flushThinkingBuffer(chatId)
         seenToolEventsRef.current = {}
-        setRuntime(chatId, { busy: false, startedAt: undefined, status: '', error: e.message })
+        setRuntime(chatId, { busy: false, startedAt: undefined, status: '', error: e.message, goalBacked: false })
+        trackEvent('chat_turn_error', { chatId, message: e.message })
         updateChatMessages(chatId, (m) => sealAssistantStreaming(settleTools(sealAllThinking(m))))
       }
     })
@@ -2933,25 +3205,29 @@ export default function Chat() {
   }, [searchOpen, searchQuery])
 
   function send() {
-    const text = composerValue().trim()
+    const rawText = composerValue()
+    const text = rawText.trim()
     const pasted = pastedAttachments
     if (!text && !pasted.length) return
     const chatId = activeRef.current.chatId || activeChatId
-    if (busy) {
-      if (chatId) queueFollowUp(chatId, text || 'See pasted text attachment.')
+    const goalBacked = composerMode === 'goal'
+    if (!goalBacked && handleSlashCommand(text)) {
+      setComposerInput('')
       return
     }
-    if (handleSlashCommand(text)) {
-      setComposerInput('')
+    if (busy) {
+      if (chatId) queueFollowUp(chatId, text || 'See pasted text attachment.', goalBacked)
+      if (goalBacked) setComposerMode('chat')
       return
     }
     if (!chatId) return
     setError('')
     setComposerInput('')
+    if (goalBacked) setComposerMode('chat')
     const files = attachments
     setAttachments([])
     setPastedAttachments([])
-    void sendTextToChat(chatId, text, files, pasted)
+    void sendTextToChat(chatId, text, files, pasted, goalBacked)
   }
 
   function interruptTurn() {
@@ -2962,20 +3238,16 @@ export default function Chat() {
     if (chatId) {
       const runtime = runtimesRef.current[chatId]
       const durationMs = runtime?.startedAt ? Date.now() - runtime.startedAt : undefined
+      if (runtime?.goalBacked) clearGoalAfterTurn(chatId, targetSession)
       flushStreamBuffer(chatId, true)
       flushThinkingBuffer(chatId)
-      updateChatMessages(chatId, (messages) => sealAssistantStreaming(settleTools(sealAllThinking(messages))))
-      setRuntime(chatId, { busy: false, startedAt: undefined, status: 'Interrupted.', error: '' })
+      updateChatMessages(chatId, (messages) => finalizeInterruptedTurn(messages, durationMs))
+      trackEvent('chat_interrupted', { chatId, durationMs })
+        setRuntime(chatId, { busy: false, startedAt: undefined, status: 'Interrupted.', error: '', goalBacked: false })
       const { project } = getChatById(chatId)
       void window.y.app.checkpoint(project?.id).then((checkpoint) => {
         if (!checkpoint.ok || !checkpoint.checkpointId) return
-        updateChatMessages(chatId, (list) => {
-          const index = list.findLastIndex((message) => message.role === 'assistant')
-          if (index === -1) return list
-          const next = list.slice()
-          next[index] = { ...next[index], checkpointId: checkpoint.checkpointId, durationMs, interrupted: true }
-          return next
-        })
+        updateChatMessages(chatId, (list) => finalizeInterruptedTurn(list, durationMs, checkpoint.checkpointId))
       })
     }
     else {
@@ -3039,32 +3311,36 @@ export default function Chat() {
       if (!res.canceled) showToast(res.error || 'Could not attach files.')
       return
     }
-    setAttachments((prev) => {
-      const seen = new Set(prev.map((file) => file.path))
-      const next = prev.slice()
-      for (const file of res.files) {
-        if (!seen.has(file.path)) {
-          seen.add(file.path)
-          next.push(file)
-        }
-      }
-	      return next
-	    })
+    addAttachments(res.files)
 	  }
 
 	  function addAttachments(files: SelectedFile[]) {
 	    if (!files.length) return
-	    setAttachments((prev) => {
-	      const seen = new Set(prev.map((file) => file.path))
-	      const next = prev.slice()
-	      for (const file of files) {
-	        if (!seen.has(file.path)) {
-	          seen.add(file.path)
-	          next.push(file)
-	        }
+	    const seen = new Set(attachments.map((file) => file.path))
+	    const next = attachments.slice()
+	    let skippedLarge = 0
+	    let skippedLimit = 0
+	    let skippedDuplicate = 0
+	    for (const file of files) {
+	      if (seen.has(file.path)) {
+	        skippedDuplicate += 1
+	        continue
 	      }
-	      return next
-	    })
+	      if (typeof file.size === 'number' && file.size > MAX_FILE_ATTACHMENT_BYTES) {
+	        skippedLarge += 1
+	        continue
+	      }
+	      if (next.length >= MAX_FILE_ATTACHMENTS) {
+	        skippedLimit += 1
+	        continue
+	      }
+	      seen.add(file.path)
+	      next.push(file)
+	    }
+	    if (next.length !== attachments.length) setAttachments(next)
+	    if (skippedLimit > 0) showToast(`You can attach up to ${MAX_FILE_ATTACHMENTS} files.`)
+	    else if (skippedLarge > 0) showToast('Some files were too large to attach.')
+	    else if (skippedDuplicate > 0 && next.length === attachments.length) showToast('Those files are already attached.')
 	  }
 
 	  function droppedSelectedFiles(fileList: FileList): SelectedFile[] {
@@ -3143,6 +3419,7 @@ export default function Chat() {
   async function openFile(file: SelectedFile) {
     setSettingsOpen(false)
     setActiveFile(file)
+    setActiveFileDiff('')
     setFileRailOpen(true)
     setFileStatus('Opening...')
     const res = await window.y.app.readProjectFile(activeProjectId, file.path)
@@ -3157,6 +3434,54 @@ export default function Chat() {
     setSavedFileContent(content)
     setFileMode('preview')
     setFileStatus('')
+  }
+
+  async function openEditedFileTarget(target: string, diff: string) {
+    const project = findActiveProject(projects, activeProjectId)
+    if (!project) {
+      setToast('Open a project folder first.')
+      return
+    }
+    const normalized = target.replace(/\\/g, '/')
+    const path = normalized.startsWith('/') ? normalized : `${project.path.replace(/\/$/u, '')}/${normalized.replace(/^\.?\//u, '')}`
+    const name = normalized.split('/').filter(Boolean).pop() || 'file'
+    await openFile({ name, path, relPath: normalized.startsWith('/') ? undefined : normalized })
+    setActiveFileDiff(diff)
+    setFileMode(diff ? 'diff' : 'preview')
+    trackEvent('chat_file_diff_opened', { projectId: project.id, hasDiff: Boolean(diff), fileExtension: name.split('.').pop() || '' })
+  }
+
+  function assistantLinkFileTarget(href: string, label: string): string | null {
+    const raw = (href || label || '').trim()
+    if (!raw || raw.startsWith('#')) return null
+    if (/^[a-z][a-z0-9+.-]*:/i.test(raw) && !raw.startsWith('file:')) return null
+    let value = raw
+    if (value.startsWith('file://')) {
+      try {
+        value = new URL(value).pathname
+      } catch {
+        value = value.replace(/^file:\/\//i, '')
+      }
+    }
+    try {
+      value = decodeURIComponent(value)
+    } catch {}
+    value = value
+      .replace(/\\/g, '/')
+      .replace(/[?#].*$/u, '')
+      .replace(/:(\d+)(?::\d+)?$/u, '')
+      .trim()
+    if (!value || value.endsWith('/')) return null
+    if (value.includes('://')) return null
+    if (!value.startsWith('/') && !/^[\w@.+-]+(?:\/[\w@.+ -]+)+$/u.test(value)) return null
+    return value
+  }
+
+  function openAssistantFileLink(href: string, label: string): boolean {
+    const target = assistantLinkFileTarget(href, label)
+    if (!target) return false
+    void openEditedFileTarget(target, '')
+    return true
   }
 
   async function saveActiveFile() {
@@ -3179,6 +3504,7 @@ export default function Chat() {
     setActiveFile(null)
     setFileContent('')
     setSavedFileContent('')
+    setActiveFileDiff('')
     setFileStatus('')
   }
 
@@ -3282,7 +3608,7 @@ export default function Chat() {
 
   const hasProject = Boolean(activeProjectId && activeChatId)
   const slashReady = input.trim().startsWith('/')
-  const collapsedTurns = new Map<number, Array<{ message: Msg; index: number }>>()
+  const collapsedTurns = new Map<number, ChatWorkEntry[]>()
   const hiddenWork = new Set<number>()
   let turnStart = -1
   for (let index = 0; index < messages.length; index += 1) {
@@ -3293,13 +3619,15 @@ export default function Chat() {
     }
     if (turnStart === -1 || message.role !== 'assistant' || !message.checkpointId || (message.durationMs === undefined && !message.interrupted)) continue
     const work = messages.slice(turnStart, index).map((item, offset) => ({ message: item, index: turnStart + offset }))
-    if (hasCollapsibleWork(work)) {
+    if (chatWorkHasCollapsibleTool(work)) {
       collapsedTurns.set(index, work)
       for (const entry of work) hiddenWork.add(entry.index)
     }
     turnStart = -1
   }
-  const liveStartedAt = activeChatId ? runtimesRef.current[activeChatId]?.startedAt : undefined
+  const activeRuntime = activeChatId ? runtimesRef.current[activeChatId] : undefined
+  const activeGoalRunning = Boolean(activeRuntime?.busy && activeRuntime?.goalBacked)
+  const liveStartedAt = activeRuntime?.startedAt
   const liveDurationMs = busy && liveStartedAt ? Math.max(0, elapsedTick - liveStartedAt) : 0
   return (
     <>
@@ -3503,13 +3831,13 @@ export default function Chat() {
           color: var(--y-text); font: inherit; font-size: 12.5px; outline: none;
         }
         .y-chat-right {
-          margin-left: auto; flex-shrink: 0; position: relative;
-          display: inline-flex; align-items: center; justify-content: flex-end;
+          margin-left: auto; flex: 0 0 28px; width: 28px; min-width: 28px; position: relative;
+          display: inline-flex; align-items: center; justify-content: flex-end; align-self: center; height: 22px;
         }
-        .y-chat-meta { font-size: 11px; color: var(--y-text-3); transition: opacity 0.12s ease; white-space: nowrap; }
+        .y-chat-meta { font-size: 11px; color: var(--y-text-3); transition: opacity 0.12s ease; white-space: nowrap; line-height: 22px; height: 22px; display: block; }
         .y-chat-actions {
-          position: absolute; right: 0; top: 50%; transform: translateY(-50%);
-          display: inline-flex; align-items: center; gap: 2px;
+          position: absolute; right: 0; top: 0; height: 22px;
+          display: inline-flex; align-items: center; justify-content: center; gap: 2px;
           opacity: 0; transition: opacity 0.12s ease;
         }
         .y-chat-item:hover .y-chat-actions,
@@ -3521,6 +3849,7 @@ export default function Chat() {
           border: none; border-radius: 6px; background: transparent; color: var(--y-text-3);
           cursor: pointer; padding: 0;
         }
+        .y-chat-action svg { display: block; }
         .y-chat-action:hover { background: rgba(255,255,255,0.07); color: var(--y-text); }
         .y-chat-indicator {
           width: 10px; height: 10px; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center;
@@ -3547,6 +3876,7 @@ export default function Chat() {
 	        .y-header {
           flex-shrink: 0; height: 44px; display: flex; align-items: stretch;
           padding: 0 14px;
+          border-bottom: 1px solid rgba(255,255,255,0.06);
         }
         .y-header-lead {
           width: 0;
@@ -3568,7 +3898,7 @@ export default function Chat() {
 	        .y-icon-btn.active {
 	          background: rgba(255,255,255,0.07); border-color: rgba(255,255,255,0.13); color: var(--y-text);
 	        }
-        .y-title { flex: 1; min-width: 0; font-size: 14px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transform: translateY(4px); }
+        .y-title { flex: 1; min-width: 0; font-size: 14px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transform: translateY(1px); }
         .y-header-actions { display: flex; flex-shrink: 0; gap: 6px; align-items: center; }
         .y-modify-btn {
           display: inline-flex; align-items: center; gap: 6px;
@@ -3592,7 +3922,8 @@ export default function Chat() {
           position: relative;
           transition: width 0.26s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.26s cubic-bezier(0.4, 0, 0.2, 1);
         }
-        .y-file-rail:not(.is-open) { width: 0; border-left-color: transparent; }
+        .y-file-rail:not(.is-open) { width: 0; min-width: 0; border-left-width: 0; pointer-events: none; }
+        .y-file-rail:not(.is-open) .y-resize-handle { display: none; }
         @media (prefers-reduced-motion: reduce) { .y-file-rail { transition: none; } }
         .y-file-rail-head {
           height: 44px; flex-shrink: 0; display: flex; align-items: center; justify-content: space-between;
@@ -3659,6 +3990,16 @@ export default function Chat() {
         .y-file-code-pre::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 99px; }
         .y-file-code-pre::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.22); }
         .y-file-code-pre code { background: none; padding: 0; font-size: inherit; font-weight: 400; font-family: inherit; color: inherit; border-radius: 0; }
+        .y-file-diff-pre {
+          flex: 1; margin: 0; padding: 0 0 36px; overflow: auto;
+          font-family: var(--y-mono); font-size: var(--y-code-size); line-height: var(--y-code-line); tab-size: 2;
+          color: var(--y-code-color); background: var(--y-code-bg);
+          scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.12) transparent;
+        }
+        .y-file-diff-pre::-webkit-scrollbar { width: 5px; height: 5px; }
+        .y-file-diff-pre::-webkit-scrollbar-track { background: transparent; }
+        .y-file-diff-pre::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 99px; }
+        .y-file-diff-pre::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.22); }
         .y-file-editor {
           flex: 1; width: 100%; resize: none; border: none; outline: none;
           padding: 22px 26px 40px; background: transparent; color: rgba(245,245,245,0.9);
@@ -3844,6 +4185,16 @@ export default function Chat() {
         .md-html source { display: none; }
         .md-list { margin: 2px 0 4px; padding-left: 24px; display: flex; flex-direction: column; gap: 7px; }
         .md-list li { margin: 0; padding-left: 2px; }
+        .md-task-list { list-style: none; padding-left: 2px; gap: 8px; }
+        .md-task-list li { display: flex; align-items: flex-start; gap: 9px; color: rgba(255,255,255,0.84); }
+        .md-task-list li.is-checked { color: rgba(255,255,255,0.58); }
+        .md-task-box {
+          width: 15px; height: 15px; margin-top: 4px; border-radius: 5px;
+          border: 1px solid rgba(255,255,255,0.22); background: rgba(255,255,255,0.045); color: #f4f4f2;
+          display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
+          font-size: 10px; line-height: 1;
+        }
+        .md-task-list li.is-checked .md-task-box { border-color: rgba(120,160,215,0.42); background: rgba(95,135,190,0.18); }
         .md-inline { font-family: 'Fira Code', 'JetBrains Mono', 'Cascadia Code', ui-monospace, monospace; font-size: 0.88em; background: rgba(255,255,255,0.08); border-radius: 5px; padding: 1px 6px; }
         .md-code { margin: 2px 8px; overflow: hidden; background: var(--y-code-bg); border: 1px solid rgba(255,255,255,0.07); border-radius: 12px; }
         .md-code-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-bottom: 1px solid rgba(255,255,255,0.06); background: var(--y-code-bg); }
@@ -3982,6 +4333,8 @@ export default function Chat() {
         .y-settings-toggle.is-on span { transform: translateX(14px); background: #fff; }
         .y-agent-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin-top: 6px; }
         .y-agent-card { min-height: 100px; padding: 15px; border: 1px solid var(--y-border); border-radius: 12px; background: rgba(255,255,255,0.025); display: flex; flex-direction: column; align-items: flex-start; }
+        .y-agent-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+        .y-agent-title strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .y-agent-card > span { margin-top: 10px; padding: 3px 7px; border-radius: 99px; background: rgba(90,145,105,0.14); color: rgba(145,205,160,0.86); font-size: 10.5px; }
         .y-settings-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 14px; }
         .tool-activity { align-self: flex-start; max-width: 100%; width: min(680px, 100%); padding: 1px 0; }
@@ -4079,6 +4432,11 @@ export default function Chat() {
         .y-edited-files-head { border-bottom: 1px solid var(--y-border); }
         .y-edited-files-head strong { font-size: 13px; }
         .y-edited-file { font-family: var(--y-mono); font-size: 12px; color: #e4e4e4; }
+        .y-edited-file-button { width: 100%; border: 0; background: transparent; text-align: left; cursor: pointer; }
+        .y-edited-file-button:hover { background: rgba(255,255,255,0.04); }
+        .y-edited-files-actions { display: inline-flex; align-items: center; gap: 10px; }
+        .y-edited-undo { display: inline-flex; align-items: center; gap: 5px; height: 24px; border: 1px solid var(--y-border); border-radius: 999px; background: rgba(255,255,255,0.045); color: var(--y-text-2); padding: 0 9px; font: inherit; font-family: var(--y-font); font-size: 11.5px; cursor: pointer; }
+        .y-edited-undo:hover { border-color: var(--y-border-strong); color: var(--y-text); background: rgba(255,255,255,0.075); }
         .y-edited-files b { color: #4ade80; font-style: normal; }
         .y-edited-files i { color: #ff6b6b; font-style: normal; }
         .y-error { color: #ff7a7a; white-space: pre-wrap; font-size: 13px; line-height: 20px; }
@@ -4191,6 +4549,47 @@ export default function Chat() {
           flex-shrink: 0;
         }
         .y-round-btn:disabled { opacity: 0.45; cursor: default; }
+        .y-goal-btn.is-active {
+          color: #f4f4f2;
+          border-color: rgba(120,160,215,0.38);
+          background: rgba(95,135,190,0.16);
+        }
+        .y-composer-mode-pill,
+        .y-composer-goal-chip {
+          height: 24px;
+          max-width: 190px;
+          display: inline-flex;
+          align-items: center;
+          gap: 7px;
+          padding: 0 9px;
+          border-radius: 999px;
+          border: 1px solid rgba(120,160,215,0.28);
+          background: rgba(95,135,190,0.12);
+          color: rgba(218,226,238,0.9);
+          font-size: 11.5px;
+          line-height: 1;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          flex-shrink: 0;
+        }
+        .y-composer-mode-pill { color: #f4f4f2; }
+        .y-composer-mode-pill button {
+          width: 16px;
+          height: 16px;
+          border: none;
+          border-radius: 50%;
+          background: rgba(255,255,255,0.08);
+          color: inherit;
+          cursor: pointer;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          padding: 0;
+          font: inherit;
+          line-height: 1;
+        }
+        .y-composer-mode-pill button:hover { background: rgba(255,255,255,0.14); }
         .y-steer-btn {
           height: 30px; padding: 0 11px; border-radius: 9px; border: 1px solid rgba(120,150,190,0.28);
           background: rgba(110,145,190,0.12); color: rgba(205,220,240,0.92);
@@ -4228,6 +4627,443 @@ export default function Chat() {
         }
         .y-drop-item:hover { background: rgba(255,255,255,0.06); color: var(--y-text); }
         .y-drop-item.active { background: rgba(255,255,255,0.08); color: var(--y-text); }
+        .y-onboarding {
+          flex: 1;
+          min-height: 0;
+          display: grid;
+          place-items: center;
+          padding: 34px 24px 40px;
+          overflow: auto;
+        }
+        .y-onboarding-card {
+          width: min(920px, 100%);
+          border: 1px solid var(--y-border-strong);
+          border-radius: 26px;
+          background:
+            radial-gradient(circle at 12% 0%, rgba(80,125,185,0.18), transparent 34%),
+            linear-gradient(180deg, rgba(255,255,255,0.055), rgba(255,255,255,0.025));
+          box-shadow: 0 28px 90px rgba(0,0,0,0.36);
+          padding: 28px;
+        }
+        .y-onboarding-brand {
+          display: flex;
+          align-items: center;
+          gap: 18px;
+        }
+        .y-onboarding-brand .y-mark { width: 58px; height: 64px; flex: 0 0 auto; }
+        .y-onboarding-kicker {
+          margin: 0 0 6px;
+          color: var(--y-text-3);
+          font-size: 12px;
+          font-weight: 700;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+        }
+        .y-onboarding h1 {
+          margin: 0;
+          font-size: clamp(28px, 4vw, 44px);
+          line-height: 1;
+          letter-spacing: -0.04em;
+        }
+        .y-onboarding h2 {
+          margin: 0 0 6px;
+          font-size: 17px;
+          letter-spacing: -0.02em;
+        }
+        .y-onboarding p { margin: 0; color: var(--y-text-2); line-height: 1.55; }
+        .y-onboarding-steps {
+          display: flex;
+          gap: 8px;
+          margin: 26px 0 18px;
+        }
+        .y-onboarding-step {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          height: 34px;
+          padding: 0 12px;
+          border: 1px solid var(--y-border);
+          border-radius: 999px;
+          background: rgba(255,255,255,0.035);
+          color: var(--y-text-2);
+          font: inherit;
+          font-size: 12px;
+          cursor: pointer;
+        }
+        .y-onboarding-step span {
+          width: 18px;
+          height: 18px;
+          border-radius: 50%;
+          display: grid;
+          place-items: center;
+          background: rgba(255,255,255,0.08);
+          color: var(--y-text-3);
+          font-size: 10px;
+          font-weight: 700;
+        }
+        .y-onboarding-step.active {
+          border-color: rgba(120,160,215,0.34);
+          background: rgba(95,135,190,0.16);
+          color: var(--y-text);
+        }
+        .y-onboarding-step.done span { background: #4e7fb8; color: #fff; }
+        .y-onboarding-panel {
+          min-height: 320px;
+          border: 1px solid var(--y-border);
+          border-radius: 20px;
+          background: rgba(0,0,0,0.16);
+          padding: 20px;
+        }
+        .y-onboarding-muted { max-width: 640px; font-size: 13px; }
+        .y-auth-grid,
+        .y-cli-grid,
+        .y-guide-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+          gap: 12px;
+          margin-top: 18px;
+        }
+        .y-auth-card,
+        .y-cli-card,
+        .y-guide-grid > div {
+          border: 1px solid var(--y-border);
+          border-radius: 16px;
+          background: rgba(255,255,255,0.035);
+          color: var(--y-text);
+        }
+        .y-auth-card {
+          min-height: 92px;
+          padding: 16px;
+          text-align: left;
+          font: inherit;
+          cursor: pointer;
+        }
+        .y-auth-card:hover,
+        .y-auth-card.active {
+          border-color: rgba(120,160,215,0.36);
+          background: rgba(95,135,190,0.15);
+        }
+        .y-auth-card strong,
+        .y-cli-card strong,
+        .y-guide-grid strong { display: block; font-size: 13px; font-weight: 700; }
+        .y-auth-card span,
+        .y-cli-card span,
+        .y-guide-grid span { display: block; margin-top: 6px; color: var(--y-text-3); font-size: 12px; line-height: 1.5; }
+        .y-email-auth {
+          display: flex;
+          gap: 10px;
+          margin-top: 12px;
+        }
+        .y-email-auth input {
+          min-width: 0;
+          flex: 1;
+          height: 34px;
+          padding: 0 12px;
+          border: 1px solid var(--y-border);
+          border-radius: 10px;
+          background: rgba(0,0,0,0.18);
+          color: var(--y-text);
+          font: inherit;
+          font-size: 12px;
+          outline: none;
+        }
+        .y-email-auth input:focus { border-color: rgba(120,160,215,0.48); }
+        .y-auth-status {
+          margin-top: 10px;
+          color: var(--y-text-2);
+          font-size: 12px;
+          line-height: 1.45;
+        }
+        .y-guide-grid .y-guide-engines {
+          display: inline-flex;
+          align-items: center;
+          gap: 5px;
+          margin: 0 2px;
+          color: var(--y-text-2);
+          white-space: nowrap;
+        }
+        .y-onboarding-note {
+          margin-top: 14px;
+          padding: 11px 12px;
+          border: 1px solid rgba(120,160,215,0.18);
+          border-radius: 12px;
+          background: rgba(95,135,190,0.08);
+          color: var(--y-text-2);
+          font-size: 12px;
+          line-height: 1.5;
+        }
+        .y-onboarding-toggle {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          margin-top: 14px;
+          color: var(--y-text);
+        }
+        .y-onboarding-toggle small { display: block; margin-top: 3px; color: var(--y-text-3); font-size: 11.5px; line-height: 1.45; }
+        .y-onboarding-row,
+        .y-onboarding-actions,
+        .y-onboarding-footer {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 14px;
+        }
+        .y-onboarding-footer { margin-top: 18px; }
+        .y-onboarding-primary,
+        .y-onboarding-secondary {
+          height: 34px;
+          padding: 0 14px;
+          border-radius: 10px;
+          font: inherit;
+          font-size: 12px;
+          font-weight: 700;
+          cursor: pointer;
+        }
+        .y-onboarding-primary {
+          border: 1px solid rgba(255,255,255,0.12);
+          background: #f7f7f4;
+          color: #0a0a0b;
+        }
+        .y-onboarding-primary:disabled,
+        .y-onboarding-secondary:disabled { opacity: 0.45; cursor: default; }
+        .y-onboarding-secondary {
+          border: 1px solid var(--y-border);
+          background: rgba(255,255,255,0.045);
+          color: var(--y-text-2);
+        }
+        .y-cli-card {
+          padding: 15px;
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+        }
+        .y-cli-card.installed { border-color: rgba(74,222,128,0.24); background: rgba(74,222,128,0.07); }
+        .y-cli-head { display: flex; align-items: center; gap: 10px; }
+        .y-cli-card code {
+          display: block;
+          min-height: 34px;
+          padding: 9px 10px;
+          border: 1px solid var(--y-border);
+          border-radius: 10px;
+          background: rgba(0,0,0,0.18);
+          color: var(--y-code-color);
+          font-family: var(--y-mono);
+          font-size: 11.5px;
+          white-space: pre-wrap;
+          overflow-wrap: anywhere;
+        }
+        .y-guide-grid > div { padding: 16px; min-height: 106px; }
+        .y-onboarding-actions { justify-content: flex-end; margin-top: 20px; }
+
+        /* ---- Full-screen login page ---- */
+        .y-login {
+          position: fixed;
+          inset: 0;
+          z-index: 9999;
+          display: flex;
+        }
+        .y-login-drag {
+          position: absolute;
+          top: 0; left: 0; right: 0;
+          height: 38px;
+          -webkit-app-region: drag;
+          z-index: 10;
+          pointer-events: none;
+        }
+        .y-login-left {
+          width: 44%;
+          flex-shrink: 0;
+          display: flex;
+          flex-direction: column;
+          padding: 32px 48px 36px;
+          background: #0c0c0e;
+          border-right: 1px solid rgba(255,255,255,0.06);
+          -webkit-app-region: no-drag;
+          overflow-y: auto;
+        }
+        .y-login-wordmark {
+          font-family: var(--y-mono);
+          font-size: 20px;
+          font-weight: 700;
+          letter-spacing: -0.02em;
+          color: rgba(255,255,255,0.88);
+          -webkit-app-region: no-drag;
+          padding-top: 4px;
+        }
+        .y-login-body {
+          flex: 1;
+          display: flex;
+          flex-direction: column;
+          justify-content: center;
+          padding: 28px 0 0;
+          max-width: 360px;
+        }
+        .y-login-headline {
+          margin: 0 0 14px;
+          font-size: clamp(20px, 2.2vw, 28px);
+          font-weight: 700;
+          letter-spacing: -0.03em;
+          line-height: 1.22;
+          color: rgba(255,255,255,0.93);
+        }
+        .y-login-sub {
+          margin: 0 0 28px;
+          font-size: 14px;
+          color: rgba(255,255,255,0.44);
+          line-height: 1.5;
+        }
+        .y-login-form {
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+        }
+        .y-login-input {
+          height: 44px;
+          padding: 0 14px;
+          border: 1px solid rgba(255,255,255,0.13);
+          border-radius: 9px;
+          background: rgba(255,255,255,0.04);
+          color: rgba(255,255,255,0.88);
+          font: inherit;
+          font-size: 14px;
+          outline: none;
+          transition: border-color 0.15s;
+        }
+        .y-login-input::placeholder { color: rgba(255,255,255,0.26); }
+        .y-login-input:focus { border-color: rgba(120,160,215,0.5); }
+        .y-login-input:disabled { opacity: 0.5; }
+        .y-login-magic {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 8px;
+          height: 44px;
+          border: 1px solid rgba(255,255,255,0.16);
+          border-radius: 9px;
+          background: rgba(255,255,255,0.95);
+          color: #0a0a0b;
+          font: inherit;
+          font-size: 11.5px;
+          font-weight: 700;
+          letter-spacing: 0.09em;
+          cursor: pointer;
+          transition: background 0.14s;
+        }
+        .y-login-magic:hover:not(:disabled) { background: #ffffff; }
+        .y-login-magic:disabled { opacity: 0.45; cursor: default; }
+        .y-login-or {
+          position: relative;
+          display: flex;
+          align-items: center;
+          margin: 4px 0;
+          color: rgba(255,255,255,0.26);
+          font-size: 11.5px;
+          letter-spacing: 0.06em;
+        }
+        .y-login-or::before,
+        .y-login-or::after {
+          content: '';
+          flex: 1;
+          height: 1px;
+          background: rgba(255,255,255,0.09);
+        }
+        .y-login-or span { padding: 0 12px; }
+        .y-login-oauth {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 10px;
+          height: 44px;
+          border: 1px solid rgba(255,255,255,0.13);
+          border-radius: 9px;
+          background: transparent;
+          color: rgba(255,255,255,0.78);
+          font: inherit;
+          font-size: 11.5px;
+          font-weight: 700;
+          letter-spacing: 0.07em;
+          cursor: pointer;
+          transition: background 0.13s, border-color 0.13s;
+        }
+        .y-login-oauth:hover:not(:disabled) {
+          background: rgba(255,255,255,0.055);
+          border-color: rgba(255,255,255,0.2);
+          color: rgba(255,255,255,0.92);
+        }
+        .y-login-oauth:disabled { opacity: 0.45; cursor: default; }
+        .y-login-status {
+          margin-top: 2px;
+          font-size: 12px;
+          line-height: 1.45;
+          color: rgba(255,255,255,0.48);
+        }
+        .y-login-continue {
+          height: 38px;
+          border: 1px solid rgba(255,255,255,0.1);
+          border-radius: 9px;
+          background: rgba(255,255,255,0.06);
+          color: rgba(255,255,255,0.78);
+          font: inherit;
+          font-size: 13px;
+          font-weight: 600;
+          cursor: pointer;
+          transition: background 0.13s;
+        }
+        .y-login-continue:hover { background: rgba(255,255,255,0.1); color: rgba(255,255,255,0.95); }
+        .y-login-analytics {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          margin-top: 28px;
+          color: rgba(255,255,255,0.32);
+          font-size: 12px;
+          cursor: pointer;
+          -webkit-app-region: no-drag;
+        }
+        .y-login-skip {
+          margin-top: 10px;
+          border: none;
+          background: transparent;
+          color: rgba(255,255,255,0.28);
+          font: inherit;
+          font-size: 12px;
+          cursor: pointer;
+          text-align: left;
+          padding: 0;
+          -webkit-app-region: no-drag;
+        }
+        .y-login-skip:hover { color: rgba(255,255,255,0.52); }
+        .y-login-right {
+          flex: 1;
+          position: relative;
+          overflow: hidden;
+          background: #070708;
+        }
+        .y-bin-rain {
+          position: absolute;
+          inset: 0;
+          font-family: 'SF Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+          font-size: 13px;
+          color: rgba(255,255,255,0.28);
+          overflow: hidden;
+          pointer-events: none;
+        }
+        .y-bin-col {
+          position: absolute;
+          bottom: 100%;
+          display: flex;
+          flex-direction: column;
+          line-height: 1.9;
+          animation: y-bin-fall linear infinite;
+          white-space: nowrap;
+        }
+        .y-bin-col span:nth-child(3n+1) { color: rgba(255,255,255,0.55); }
+        .y-bin-col span:nth-child(5n+2) { color: rgba(180,215,255,0.38); }
+        .y-bin-col span:nth-child(11n+1) { color: rgba(255,255,255,0.82); }
+        @keyframes y-bin-fall {
+          to { transform: translateY(calc(100vh + 100%)); }
+        }
+
       `}</style>
 
       <div className={'y-app' + (sidebarOpen ? '' : ' sidebar-closed')} data-testid="y-app">
@@ -4425,7 +5261,7 @@ export default function Chat() {
           <header className="y-header">
             <div className="y-header-lead" aria-hidden="true" />
             <div className="y-header-drag">
-              <span className="y-title" data-testid="chat-title" title={settingsOpen ? 'Settings' : title}>{settingsOpen ? 'Settings' : title}</span>
+              <span className="y-title" data-testid="chat-title" title={settingsOpen ? 'Settings' : !onboardingDone ? 'Welcome to y' : title}>{settingsOpen ? 'Settings' : !onboardingDone ? 'Welcome to y' : title}</span>
               {settingsOpen ? (
                 <div className="y-header-actions">
                   <button type="button" className="y-icon-btn y-settings-header-close" aria-label="Close settings" title="Close settings" onClick={() => setSettingsOpen(false)}>
@@ -4450,7 +5286,7 @@ export default function Chat() {
 	                }}
 	                disabled={!activeProjectId}
 	              >
-	                <Icon name="terminal" size={15} />
+	                <Icon name="terminal" size={14} />
 	              </button>
 	              {!fileRailOpen && (
 	                <button
@@ -4465,7 +5301,7 @@ export default function Chat() {
                   }}
                   disabled={!activeProjectId}
                 >
-                  <Icon name="files" size={15} />
+                  <Icon name="files" size={14} />
                 </button>
               )}
               {!PREVIEW && window.y.modify && !modifyOpen ? (
@@ -4505,6 +5341,12 @@ export default function Chat() {
               onAuthStatus={(engine) => { terminalCommand(providerStatusCommand(engine, 'auth'), `${LABELS[engine] || engine} auth`) }}
               onDoctor={(engine) => { terminalCommand(providerStatusCommand(engine, 'doctor'), `${LABELS[engine] || engine} doctor`) }}
             />
+          ) : !onboardingDone ? (
+            <OnboardingView
+              catalog={catalog}
+              onFinish={() => setOnboardingDone(true)}
+              onOpenProject={() => void openProject()}
+            />
           ) : <>
           {activeFile ? (
             <div className="y-file-view" data-testid="file-view">
@@ -4512,6 +5354,15 @@ export default function Chat() {
                 <FileIcon name={activeFile.name} size={20} />
                 <span className="y-file-name" title={fileDisplayPath(activeFile)}>{fileDisplayPath(activeFile)}</span>
                 <div className="y-segment" role="tablist" aria-label="File view mode">
+                  {activeFileDiff ? (
+                    <button
+                      type="button"
+                      className={fileMode === 'diff' ? 'active' : ''}
+                      onClick={() => setFileMode('diff')}
+                    >
+                      Diff
+                    </button>
+                  ) : null}
                   <button
                     type="button"
                     className={fileMode === 'preview' ? 'active' : ''}
@@ -4543,7 +5394,9 @@ export default function Chat() {
                 </button>
               </div>
               <div className="y-file-body">
-                {isImageFile(activeFile) ? (
+                {fileMode === 'diff' && activeFileDiff ? (
+                  <FileDiffPreview diff={activeFileDiff} />
+                ) : isImageFile(activeFile) ? (
                   <div className="y-file-image">
                     {fileContent ? (
                       <img src={fileContent} alt={activeFile.name} className="y-file-img" />
@@ -4635,127 +5488,73 @@ export default function Chat() {
                 {messages.map((m, i) => {
                   const key = `${m.role}-${m.id ?? i}`
                   if (hiddenWork.has(i)) return null
-	                  if (m.role === 'thinking') return <ThinkingBlock key={key} message={m} />
+	                  if (m.role === 'thinking') return <ChatThinkingBlock key={key} message={m} classes={CHAT_SURFACE_CLASSES.main} />
 	                  if (m.role === 'user') {
 		                    const editingDraft =
 			                      editingMessage?.chatId === activeChatId && editingMessage?.index === i ? editingMessage : null
-		                    const editing = Boolean(editingDraft)
 	                    return (
-	                      <div key={key} className="y-user-row" data-testid="user-message">
-	                        <div className={`y-user-wrap${editing ? ' is-editing' : ''}`}>
-	                          <div className="y-user-bubble">
-	                            {editing ? (
-	                              <textarea
-	                                className="y-inline-edit"
-	                                data-testid="inline-edit-input"
-		                                value={editingDraft?.text ?? ''}
-	                                autoFocus
-	                                onChange={(event) => setEditingMessage({ chatId: activeChatId || '', index: i, text: event.currentTarget.value })}
-	                                onKeyDown={(event) => {
-	                                  if (event.key === 'Escape') cancelEditUserMessage()
-	                                  if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && activeChatId) void submitEditedUserMessage(activeChatId, i)
-	                                }}
-	                              />
-	                            ) : m.text}
-	                          </div>
-	                          {activeChatId ? <div className="y-user-actions">
-	                            {editing ? (
-	                              <>
-	                                <button
-	                                  type="button"
-	                                  className="y-message-action"
-	                                  aria-label="Submit edited message"
-	                                  title="Submit edited message"
-	                                  onClick={() => void submitEditedUserMessage(activeChatId, i)}
-	                                >
-	                                  <Icon name="check" size={13} />
-	                                </button>
-	                                <button
-	                                  type="button"
-	                                  className="y-message-action"
-	                                  aria-label="Cancel edit"
-	                                  title="Cancel edit"
-	                                  onClick={cancelEditUserMessage}
-	                                >
-	                                  <Icon name="x" size={13} />
-	                                </button>
-	                              </>
-	                            ) : (
-	                              <>
-	                                <button
-	                                  type="button"
-	                                  className="y-message-action"
-	                                  aria-label="Copy message"
-	                                  title="Copy message"
-	                                  onClick={() => copyMessage(m.text ?? '')}
-	                                >
-	                                  <Icon name="copy" size={13} />
-	                                </button>
-	                                <button
-	                                  type="button"
-	                                  className="y-message-action"
-	                                  aria-label="Edit message"
-	                                  title="Edit message"
-	                                  onClick={() => beginEditUserMessage(activeChatId, i, m.text ?? '')}
-	                                >
-	                                  <Icon name="edit" size={13} />
-	                                </button>
-	                              </>
-	                            )}
-	                          </div> : null}
-	                        </div>
-	                      </div>
+	                      <ChatUserMessage
+                          key={key}
+                          text={m.text ?? ''}
+                          editingText={editingDraft?.text}
+                          classes={CHAT_SURFACE_CLASSES.main}
+                          testId="user-message"
+                          editTestId="inline-edit-input"
+                          actions={Boolean(activeChatId)}
+                          onCopy={() => copyMessage(m.text ?? '')}
+                          onStartEdit={() => activeChatId ? beginEditUserMessage(activeChatId, i, m.text ?? '') : undefined}
+                          onEditChange={(text) => setEditingMessage({ chatId: activeChatId || '', index: i, text })}
+                          onSubmitEdit={() => {
+                            if (activeChatId) void submitEditedUserMessage(activeChatId, i)
+                          }}
+                          onCancelEdit={cancelEditUserMessage}
+                        />
 	                    )
 	                  }
 	                  if (m.role === 'assistant') {
 	                    const assistantMessage = (
-	                      <div key={key} className={'y-assistant' + (m.streaming ? ' is-streaming' : '')} data-testid="assistant-message">
-	                        <AssistantBody text={m.text ?? ''} streaming={Boolean(m.streaming)} />
-	                        {m.checkpointId ? <div className="y-assistant-footer">
-	                          <button
-	                            type="button"
-	                            className="y-message-action"
-	                            aria-label="Copy message"
-	                            title="Copy message"
-	                            onClick={() => copyMessage(m.text ?? '')}
-	                          >
-	                            <Icon name="copy" size={18} />
-	                          </button>
-	                          {activeChatId ? (
-	                            <details className="y-message-menu">
-	                              <summary className="y-message-action" aria-label="More message actions" title="More">
-	                                <Icon name="menu" size={18} />
-	                              </summary>
-	                              <div className="y-message-menu-popover">
-	                                <button
-	                                  type="button"
-	                                  onClick={(event) => {
-	                                    event.currentTarget.closest('details')?.removeAttribute('open')
-	                                    void resetToMessage(activeChatId, i)
-	                                  }}
-	                                >
-	                                  <Icon name="undo" size={15} />
-	                                  Reset to this point
-	                                </button>
-	                              </div>
-	                            </details>
-	                          ) : null}
-	                        </div> : null}
-	                      </div>
+	                      <ChatAssistantMessage
+                          key={key}
+                          text={m.text ?? ''}
+                          streaming={Boolean(m.streaming)}
+                          checkpointId={activeChatId ? m.checkpointId : undefined}
+                          classes={CHAT_SURFACE_CLASSES.main}
+                          testId="assistant-message"
+	                          onCopy={() => copyMessage(m.text ?? '')}
+	                          onLinkClick={openAssistantFileLink}
+	                          onReset={(event) => {
+                            event.currentTarget.closest('details')?.removeAttribute('open')
+                            if (activeChatId) void resetToMessage(activeChatId, i)
+                          }}
+                        />
 	                    )
 	                    const work = collapsedTurns.get(i)
 	                    if (!work) return assistantMessage
 	                    return (
-	                      <div key={`completed-${key}`} className="y-completed-turn">
-	                        <WorkSummary work={work} durationMs={m.durationMs} interrupted={m.interrupted} />
+	                      <div key={`completed-${key}`} className={CHAT_SURFACE_CLASSES.main.completedTurn}>
+	                        <ChatWorkSummary
+                            work={work}
+                            durationMs={m.durationMs}
+                            interrupted={m.interrupted}
+                            classes={CHAT_SURFACE_CLASSES.main}
+                            testId="work-log"
+                            formatDuration={formatDuration}
+                            langFromTarget={langFromToolTarget}
+                          />
 	                        {assistantMessage}
-	                        <EditedFilesSummary work={work} />
+	                        <ChatEditedFilesSummary
+                            work={work}
+                            classes={CHAT_SURFACE_CLASSES.main}
+                            testId="edited-files"
+                            onUndo={() => activeChatId ? void undoTurnEdits(activeChatId, i) : undefined}
+                            onOpenFile={(file, diff) => void openEditedFileTarget(file, diff)}
+                          />
 	                      </div>
 	                    )
 	                  }
 	                  if (m.role === 'tool') {
-	                    if (m.system) return <div key={key} className="y-tool-note">{m.name}</div>
-                    return <ToolActivity key={key} message={m} />
+	                    if (m.system) return <div key={key} className={CHAT_SURFACE_CLASSES.main.toolNote}>{m.name}</div>
+                    return <ChatToolMessage key={key} message={m} langFromTarget={langFromToolTarget} />
 	                  }
 	                  return null
 	                })}
@@ -4766,13 +5565,14 @@ export default function Chat() {
             </div>
           )}
 
-	          {!activeFile ? <div className="y-composer-wrap">
+	          {!activeFile && onboardingDone ? <div className="y-composer-wrap">
 	            {activeChatId && queuedFollowUps[activeChatId]?.length ? (
               <div className="y-queued-stack" data-testid="queued-follow-up-stack">
                 {queuedFollowUps[activeChatId].map((item, index) => (
-                  <div key={item.id} className="y-queued" data-testid="queued-follow-up">
-                    <span className="y-queued-label">Queued {index + 1}</span>
-                    <span className="y-queued-text">{item.text}</span>
+	                  <div key={item.id} className="y-queued" data-testid="queued-follow-up">
+	                    <span className="y-queued-label">Queued {index + 1}</span>
+	                    {item.goal ? <span className="y-queued-label">Goal</span> : null}
+	                    <span className="y-queued-text">{item.text}</span>
                     <button type="button" className="y-queued-steer" disabled={item.steer} onClick={() => requestQueuedSteer(activeChatId, item.id)}>
                       {item.steer ? 'Steering...' : 'Steer'}
                     </button>
@@ -4791,28 +5591,23 @@ export default function Chat() {
                 ))}
               </div>
             ) : null}
-            <div className={'y-composer' + (dragActive ? ' is-drop-target' : '')} data-testid="composer">
-              <div className="y-composer-drop-indicator" data-testid="drop-overlay" aria-hidden="true">
-                <div className="y-composer-drop-icon">
-                  <Icon name="files" size={22} />
-                </div>
-              </div>
-		              <textarea
-	                ref={composerInputRef}
-	                defaultValue=""
-	                rows={1}
-	                data-testid="composer-input"
-	                data-native-input="true"
-	                onChange={(ev) => handleComposerInput(ev.target.value)}
-                onPaste={handleComposerPaste}
-                onKeyDown={(ev) => {
+            <ChatComposerShell
+              classes={CHAT_SURFACE_CLASSES.main}
+              testId="composer"
+              inputTestId="composer-input"
+              inputRef={composerInputRef}
+              isDropTarget={dragActive}
+              dropOverlay={<Icon name="files" size={22} />}
+              placeholder={composerMode === 'goal' ? 'Write the goal for this chat...' : !hasProject ? 'Open a folder to start...' : sessionId ? 'Ask for follow-up changes' : 'Starting engine...'}
+              onInput={handleComposerInput}
+              onPaste={handleComposerPaste}
+              onKeyDown={(ev) => {
                   if (ev.key === 'Enter' && !ev.shiftKey) {
                     ev.preventDefault()
                     send()
                   }
                 }}
-                placeholder={!hasProject ? 'Open a folder to start...' : sessionId ? 'Ask for follow-up changes' : 'Starting engine...'}
-              />
+            >
               {slashSuggestions.length ? (
                 <div className="y-suggest" data-testid="slash-suggestions">
                   {slashSuggestions.map((item) => (
@@ -4875,14 +5670,15 @@ export default function Chat() {
                   ))}
                 </div>
               ) : null}
-              <div className="y-composer-row">
-                <button type="button" className="y-round-btn" aria-label="Attach" onClick={() => void attachFiles()} disabled={!hasProject || busy}>
+              <div className={CHAT_SURFACE_CLASSES.main.composerRow}>
+                <button type="button" className="y-round-btn" aria-label="Attach files" title="Attach files" onClick={() => void attachFiles()} disabled={!hasProject || busy}>
                   <Icon name="plus" size={14} />
                 </button>
                 <YDropdown
                   value={engineId}
                   options={pickerCatalog.map(function (e) { return { id: e.engine, label: e.label } })}
                   disabled={busy}
+                  title="Choose coding agent"
                   renderLabel={function (id, label) {
                     const entry = pickerCatalog.find(function (e) { return e.engine === id })
                     return (
@@ -4910,12 +5706,20 @@ export default function Chat() {
                   const { base, effort } = parseModelId(modelId)
                   const bases = catalogBaseModels(pickerCatalog, engineId)
                   const efforts = catalogEfforts(pickerCatalog, engineId, base)
+                  const effortBarMax = engineId === 'codex' ? 4 : 5
                   return (
                     <>
                       <YDropdown
                         value={base}
                         options={bases}
                         disabled={busy || bases.length === 0}
+                        title="Choose model"
+                        renderLabel={function (_id, label) {
+                          return <span className="y-drop-label">{label}</span>
+                        }}
+                        renderItem={function (_id, label) {
+                          return <span>{label}</span>
+                        }}
                         onChange={function (nb) {
                           const ne = catalogEfforts(pickerCatalog, engineId, nb)
                           start(engineId, buildModelId(nb, ne.find(function (x) { return x.id === effort })?.id ?? ne[0]?.id ?? 'medium'))
@@ -4925,8 +5729,42 @@ export default function Chat() {
                         value={effort}
                         options={efforts}
                         disabled={busy || efforts.length === 0}
+                        title="Choose reasoning effort"
+                        renderLabel={function (id, label) {
+                          return (
+                            <>
+                              <EffortBars effort={id} maxBars={effortBarMax} size={15} />
+                              <span className="y-drop-label">{label}</span>
+                            </>
+                          )
+                        }}
+                        renderItem={function (id, label) {
+                          return (
+                            <>
+                              <EffortBars effort={id} maxBars={effortBarMax} size={15} />
+                              <span>{label}</span>
+                            </>
+                          )
+                        }}
                         onChange={function (ef) { start(engineId, buildModelId(base, ef)) }}
                       />
+                      {engineId === 'codex' ? (
+                        <>
+                          <button
+                            type="button"
+                            className={'y-round-btn y-goal-btn' + (activeGoalRunning || composerMode === 'goal' ? ' is-active' : '')}
+                            aria-label={composerMode === 'goal' ? 'Turn goal mode off' : activeGoalRunning ? 'Codex goal is running' : 'Turn goal mode on'}
+                            title={composerMode === 'goal' ? 'Turn goal mode off' : activeGoalRunning ? 'Codex goal is running' : 'Turn goal mode on'}
+                            onClick={beginGoalComposer}
+                            disabled={!hasProject || activeGoalRunning}
+                          >
+                            <Icon name="goal" size={15} />
+                          </button>
+                          {activeGoalRunning ? (
+                            <span className="y-composer-goal-chip" title="Codex is running a goal">Goal running</span>
+                          ) : null}
+                        </>
+                      ) : null}
                     </>
                   )
                 })()}
@@ -4937,11 +5775,12 @@ export default function Chat() {
                   onClick={submitOrInterrupt}
                   disabled={!busy && !slashReady && (((!PREVIEW && !hasProject) || !sessionId))}
                   aria-label={busy && !hasComposerInput && !pastedAttachments.length ? 'Pause' : busy ? 'Queue follow-up' : 'Send'}
+                  title={busy && !hasComposerInput && !pastedAttachments.length ? 'Stop current response' : busy ? 'Queue follow-up' : 'Send message'}
                 >
                   <Icon name={busy && !hasComposerInput && !pastedAttachments.length ? 'stop' : 'send'} size={16} />
                 </button>
               </div>
-	            </div>
+	            </ChatComposerShell>
 	          </div> : null}
 	          </>}
 	          {composerTerminal ? (
@@ -5005,11 +5844,11 @@ export default function Chat() {
             />
             <div className="y-file-rail-head">
               <span className="y-file-rail-title">
-                <Icon name="files" size={15} />
+                <Icon name="files" size={14} />
                 Files
               </span>
               <button type="button" className="y-icon-btn" aria-label="Close files" onClick={() => setFileRailOpen(false)}>
-                <Icon name="x" size={14} />
+                <Icon name="x" size={13} />
               </button>
             </div>
             <div className="y-file-rail-list">
