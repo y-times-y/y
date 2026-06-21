@@ -1381,10 +1381,18 @@ function OnboardingView({
                     <span>{!tool.installed ? (checking ? 'Detecting...' : 'Not installed') : tool.authenticated ? 'Signed in' : 'Installed, not signed in'}</span>
                   </div>
                 </div>
-                <code>{!tool.installed ? tool.installCommand : tool.authCommand}</code>
-                <button type="button" className="y-onboarding-secondary" onClick={() => void copyCommand(!tool.installed ? tool.installCommand : tool.authCommand, tool.label)}>
-                  {copied === tool.label ? 'Copied' : !tool.installed ? 'Copy install' : 'Copy login'}
-                </button>
+                {tool.authenticated ? (
+                  <div className="y-cli-tick" aria-label="Signed in">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 13 9 18 20 6" /></svg>
+                  </div>
+                ) : (
+                  <>
+                    <code>{!tool.installed ? tool.installCommand : tool.authCommand}</code>
+                    <button type="button" className="y-onboarding-secondary" onClick={() => void copyCommand(!tool.installed ? tool.installCommand : tool.authCommand, tool.label)}>
+                      {copied === tool.label ? 'Copied' : !tool.installed ? 'Copy install' : 'Copy login'}
+                    </button>
+                  </>
+                )}
               </div>
             ))}
           </div>
@@ -4678,6 +4686,13 @@ export default function Chat() {
         }
         .y-cli-card.installed { border-color: rgba(74,222,128,0.24); background: rgba(74,222,128,0.07); }
         .y-cli-head { display: flex; align-items: center; gap: 10px; }
+        .y-cli-tick {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          height: 34px;
+          color: rgba(74,222,128,0.85);
+        }
         .y-cli-card code {
           display: block;
           min-height: 34px;
