@@ -4900,11 +4900,13 @@ export default function Chat() {
           flex-shrink: 0;
           display: flex;
           flex-direction: column;
-          padding: 32px 48px 36px;
-          background: #0c0c0e;
-          border-right: 1px solid rgba(255,255,255,0.06);
+          align-items: center;
+          justify-content: center;
+          padding: 48px 60px;
+          background: #0b0f18;
           -webkit-app-region: no-drag;
           overflow-y: auto;
+          box-shadow: 6px 0 24px rgba(0,0,0,0.7);
         }
         .y-login-wordmark {
           font-family: var(--y-mono);
@@ -4916,12 +4918,10 @@ export default function Chat() {
           padding-top: 4px;
         }
         .y-login-body {
-          flex: 1;
+          width: 100%;
+          max-width: 360px;
           display: flex;
           flex-direction: column;
-          justify-content: center;
-          padding: 28px 0 0;
-          max-width: 360px;
         }
         .y-login-headline {
           margin: 0 0 14px;
@@ -5062,7 +5062,7 @@ export default function Chat() {
           flex: 1;
           position: relative;
           overflow: hidden;
-          background: #070708;
+          background: #080808;
         }
         .y-bin-rain {
           position: absolute;
