@@ -4903,7 +4903,7 @@ export default function Chat() {
           align-items: center;
           justify-content: center;
           padding: 48px 60px;
-          background: #0b0f18;
+          background: #ffffff;
           -webkit-app-region: no-drag;
           overflow-y: auto;
           box-shadow: 6px 0 24px rgba(0,0,0,0.7);
@@ -4929,12 +4929,12 @@ export default function Chat() {
           font-weight: 700;
           letter-spacing: -0.03em;
           line-height: 1.22;
-          color: rgba(255,255,255,0.93);
+          color: rgba(10,10,15,0.92);
         }
         .y-login-sub {
           margin: 0 0 28px;
           font-size: 14px;
-          color: rgba(255,255,255,0.44);
+          color: rgba(10,10,15,0.5);
           line-height: 1.5;
         }
         .y-login-form {
@@ -4945,17 +4945,17 @@ export default function Chat() {
         .y-login-input {
           height: 44px;
           padding: 0 14px;
-          border: 1px solid rgba(255,255,255,0.13);
+          border: 1px solid rgba(10,10,15,0.16);
           border-radius: 9px;
-          background: rgba(255,255,255,0.04);
-          color: rgba(255,255,255,0.88);
+          background: rgba(10,10,15,0.03);
+          color: rgba(10,10,15,0.9);
           font: inherit;
           font-size: 14px;
           outline: none;
           transition: border-color 0.15s;
         }
-        .y-login-input::placeholder { color: rgba(255,255,255,0.26); }
-        .y-login-input:focus { border-color: rgba(120,160,215,0.5); }
+        .y-login-input::placeholder { color: rgba(10,10,15,0.32); }
+        .y-login-input:focus { border-color: rgba(60,90,160,0.5); }
         .y-login-input:disabled { opacity: 0.5; }
         .y-login-magic {
           display: flex;
@@ -4963,10 +4963,10 @@ export default function Chat() {
           justify-content: center;
           gap: 8px;
           height: 44px;
-          border: 1px solid rgba(255,255,255,0.16);
+          border: 1px solid rgba(10,10,15,0.1);
           border-radius: 9px;
-          background: rgba(255,255,255,0.95);
-          color: #0a0a0b;
+          background: #0a0a0b;
+          color: #ffffff;
           font: inherit;
           font-size: 11.5px;
           font-weight: 700;
@@ -4974,14 +4974,14 @@ export default function Chat() {
           cursor: pointer;
           transition: background 0.14s;
         }
-        .y-login-magic:hover:not(:disabled) { background: #ffffff; }
+        .y-login-magic:hover:not(:disabled) { background: #1a1a1d; }
         .y-login-magic:disabled { opacity: 0.45; cursor: default; }
         .y-login-or {
           position: relative;
           display: flex;
           align-items: center;
           margin: 4px 0;
-          color: rgba(255,255,255,0.26);
+          color: rgba(10,10,15,0.34);
           font-size: 11.5px;
           letter-spacing: 0.06em;
         }
@@ -4990,7 +4990,7 @@ export default function Chat() {
           content: '';
           flex: 1;
           height: 1px;
-          background: rgba(255,255,255,0.09);
+          background: rgba(10,10,15,0.1);
         }
         .y-login-or span { padding: 0 12px; }
         .y-login-oauth {
@@ -4999,10 +4999,10 @@ export default function Chat() {
           justify-content: center;
           gap: 10px;
           height: 44px;
-          border: 1px solid rgba(255,255,255,0.13);
+          border: 1px solid rgba(10,10,15,0.16);
           border-radius: 9px;
           background: transparent;
-          color: rgba(255,255,255,0.78);
+          color: rgba(10,10,15,0.78);
           font: inherit;
           font-size: 11.5px;
           font-weight: 700;
@@ -5011,30 +5011,30 @@ export default function Chat() {
           transition: background 0.13s, border-color 0.13s;
         }
         .y-login-oauth:hover:not(:disabled) {
-          background: rgba(255,255,255,0.055);
-          border-color: rgba(255,255,255,0.2);
-          color: rgba(255,255,255,0.92);
+          background: rgba(10,10,15,0.045);
+          border-color: rgba(10,10,15,0.26);
+          color: rgba(10,10,15,0.95);
         }
         .y-login-oauth:disabled { opacity: 0.45; cursor: default; }
         .y-login-status {
           margin-top: 2px;
           font-size: 12px;
           line-height: 1.45;
-          color: rgba(255,255,255,0.48);
+          color: rgba(10,10,15,0.55);
         }
         .y-login-continue {
           height: 38px;
-          border: 1px solid rgba(255,255,255,0.1);
+          border: 1px solid rgba(10,10,15,0.13);
           border-radius: 9px;
-          background: rgba(255,255,255,0.06);
-          color: rgba(255,255,255,0.78);
+          background: rgba(10,10,15,0.04);
+          color: rgba(10,10,15,0.8);
           font: inherit;
           font-size: 13px;
           font-weight: 600;
           cursor: pointer;
           transition: background 0.13s;
         }
-        .y-login-continue:hover { background: rgba(255,255,255,0.1); color: rgba(255,255,255,0.95); }
+        .y-login-continue:hover { background: rgba(10,10,15,0.08); color: rgba(10,10,15,0.95); }
         .y-login-analytics {
           display: flex;
           align-items: center;
@@ -5049,7 +5049,7 @@ export default function Chat() {
           margin-top: 10px;
           border: none;
           background: transparent;
-          color: rgba(255,255,255,0.28);
+          color: rgba(10,10,15,0.34);
           font: inherit;
           font-size: 12px;
           cursor: pointer;
@@ -5057,7 +5057,7 @@ export default function Chat() {
           padding: 0;
           -webkit-app-region: no-drag;
         }
-        .y-login-skip:hover { color: rgba(255,255,255,0.52); }
+        .y-login-skip:hover { color: rgba(10,10,15,0.6); }
         .y-login-right {
           flex: 1;
           position: relative;
