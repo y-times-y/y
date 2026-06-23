@@ -77,6 +77,14 @@ async function checkTool(tool: Omit<CliToolStatus, 'installed' | 'authenticated'
   if (!commandPath) return { ...tool, installed: false, authenticated: false }
 
   const version = await runCli(commandPath, ['--version'], 3000)
+  if (!version.ok) {
+    return {
+      ...tool,
+      installed: false,
+      authenticated: false,
+      error: version.output || version.error || `${tool.command} could not be executed.`
+    }
+  }
   const authArgs = tool.id === 'codex' ? ['login', 'status'] : ['auth', 'status']
   const auth = await runCli(commandPath, authArgs, 5000)
   const authText = auth.output.toLowerCase()
