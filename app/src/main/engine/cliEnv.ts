@@ -17,14 +17,16 @@ const MACOS_CLI_PATHS = [
   join(homedir(), '.bun', 'bin'),
   join(homedir(), '.deno', 'bin'),
   join(homedir(), '.cargo', 'bin'),
-  join(homedir(), 'node_modules', '.bin'),
   '/opt/homebrew/bin',
   '/opt/homebrew/sbin',
   '/usr/local/bin',
   '/usr/bin',
   '/bin',
   '/usr/sbin',
-  '/sbin'
+  '/sbin',
+  // Last resort only. A home-level node_modules/.bin can contain stale package
+  // shims that mask the real globally installed CLI.
+  join(homedir(), 'node_modules', '.bin')
 ]
 
 function uniquePathEntries(entries: Array<string | undefined>): string[] {
