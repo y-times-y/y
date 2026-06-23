@@ -8,9 +8,6 @@
   <a href="https://github.com/y-times-y/y/releases/latest/download/y-0.0.1.dmg">
     <img alt="Download for macOS" src="https://img.shields.io/badge/Download%20for-macOS-000000?style=for-the-badge&logo=apple&logoColor=white" />
   </a>
-  <a href="https://github.com/y-times-y/y">
-    <img alt="GitHub" src="https://img.shields.io/badge/Open%20on-GitHub-181717?style=for-the-badge&logo=github&logoColor=white" />
-  </a>
 </p>
 
 **y** is a self-modifying desktop coding-agent app.
