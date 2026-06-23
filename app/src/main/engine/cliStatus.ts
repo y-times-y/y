@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { spawn, type SpawnOptions } from 'node:child_process'
 import { cliEnv, resolveCliCommand } from './cliEnv'
 
 type CliToolStatus = {
@@ -24,11 +24,27 @@ function runCli(command: string, args: string[], timeoutMs = 5000): Promise<{ ok
   return new Promise((resolve) => {
     let settled = false
     let output = ''
-    const child = spawn(command, args, {
+    let child: ReturnType<typeof spawn>
+    const options: SpawnOptions = {
       env: cliEnv(),
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true
-    })
+    }
+    try {
+      child = spawn(command, args, options)
+    } catch (err) {
+      if (process.platform !== 'win32' && err && typeof err === 'object' && Reflect.get(err, 'code') === 'ENOEXEC') {
+        try {
+          child = spawn('/bin/zsh', [command, ...args], options)
+        } catch (fallbackErr) {
+          resolve({ ok: false, output, error: fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr) })
+          return
+        }
+      } else {
+        resolve({ ok: false, output, error: err instanceof Error ? err.message : String(err) })
+        return
+      }
+    }
     const timer = setTimeout(() => {
       if (settled) return
       settled = true

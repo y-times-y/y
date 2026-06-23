@@ -4031,7 +4031,7 @@ export default function Chat() {
         @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;1,400&display=swap');
         .y-app {
           --y-bg: #09090a;
-          --y-sidebar: #151416;
+          --y-sidebar: rgba(28, 29, 32, 0.16);
           --y-main: #0a0a0b;
           --y-surface: rgba(255, 255, 255, 0.045);
           --y-border: rgba(255, 255, 255, 0.08);
@@ -4049,7 +4049,7 @@ export default function Chat() {
           flex: 1;
           min-height: 0;
           position: relative;
-          background: var(--y-bg);
+          background: transparent;
           color: var(--y-text);
           font-family: var(--y-font);
           font-size: 14px;
@@ -4077,7 +4077,7 @@ export default function Chat() {
           overflow: hidden;
           display: flex;
           flex-direction: column;
-          background: var(--y-sidebar);
+          background: rgba(28, 29, 32, var(--y-sidebar-tint, 0.16));
           backdrop-filter: none;
           -webkit-backdrop-filter: none;
           border-right: 1px solid rgba(255, 255, 255, 0.09);

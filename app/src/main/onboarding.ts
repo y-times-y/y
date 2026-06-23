@@ -8,6 +8,7 @@ import { trackAnalytics } from './analytics'
 import { cliEnv, resolveCliCommand } from './engine/cliEnv'
 
 const execFileAsync = promisify(execFile)
+type ExecCliResult = { stdout: string; stderr: string }
 
 type ToolStatus = {
   id: 'claude-code' | 'codex'
@@ -45,6 +46,19 @@ async function hasCredentialFile(id: ToolStatus['id']): Promise<boolean> {
   return false
 }
 
+async function execCli(commandPath: string, args: string[], timeout: number): Promise<ExecCliResult> {
+  try {
+    const result = await execFileAsync(commandPath, args, { env: cliEnv(), timeout })
+    return { stdout: String(result.stdout), stderr: String(result.stderr) }
+  } catch (err) {
+    if (process.platform !== 'win32' && err && typeof err === 'object' && Reflect.get(err, 'code') === 'ENOEXEC') {
+      const result = await execFileAsync('/bin/zsh', [commandPath, ...args], { env: cliEnv(), timeout })
+      return { stdout: String(result.stdout), stderr: String(result.stderr) }
+    }
+    throw err
+  }
+}
+
 async function hasKeychainCredential(service: string): Promise<boolean> {
   try {
     await execFileAsync('security', ['find-generic-password', '-s', service], { timeout: 5000 })
@@ -61,7 +75,7 @@ function authStatusLooksSignedIn(output: string): boolean {
 async function isAuthenticated(id: ToolStatus['id'], commandPath: string): Promise<boolean> {
   const args = id === 'codex' ? ['login', 'status'] : ['auth', 'status']
   try {
-    const result = await execFileAsync(commandPath, args, { env: cliEnv(), timeout: 5000 })
+    const result = await execCli(commandPath, args, 5000)
     return authStatusLooksSignedIn(`${result.stdout}\n${result.stderr}`)
   } catch {
     // Fall back to persisted credential checks below.
@@ -76,7 +90,7 @@ async function checkTool(args: Omit<ToolStatus, 'installed' | 'version' | 'authe
   try {
     const commandPath = await resolveCliCommand(args.command)
     if (!commandPath) throw new Error(`${args.command} was not found in Terminal or common CLI install paths.`)
-    const result = await execFileAsync(commandPath, ['--version'], { env: cliEnv(), timeout: 5000 })
+    const result = await execCli(commandPath, ['--version'], 5000)
     const authenticated = await isAuthenticated(args.id, commandPath)
     return {
       ...args,

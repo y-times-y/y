@@ -212,7 +212,10 @@ function createWindow(): void {
     height: 820,
     show: false,
     autoHideMenuBar: true,
-    backgroundColor: '#09090a',
+    backgroundColor: process.platform === 'darwin' ? '#00000000' : '#09090a',
+    ...(process.platform === 'darwin'
+      ? { transparent: true, vibrancy: 'sidebar' as const, visualEffectState: 'active' as const }
+      : {}),
     ...(isMac
       ? {
           // Lose the separate macOS title-bar strip (the brown bar above the UI).

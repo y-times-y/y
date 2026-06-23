@@ -28,7 +28,7 @@ body,
 .kernel-shell,
 .kernel-body,
 .userland-slot {
-  background: #09090a;
+  background: transparent;
 }
 
 *:focus {
@@ -352,7 +352,6 @@ code {
   min-height: 0;
   display: flex;
   position: relative;
-  background: #09090a;
 }
 
 .kernel-drag-region {
