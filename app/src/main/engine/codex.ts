@@ -9,6 +9,7 @@ import type {
   Session,
   StartOpts
 } from './types'
+import { cliEnv } from './cliEnv'
 
 function commandName(command: EngineCommand): string {
   if (command.name === 'goal') return 'goal'
@@ -307,6 +308,8 @@ class CodexSession implements Session {
 
     const child = spawn('codex', args, {
       cwd: this.opts.cwd,
+      env: cliEnv(),
+      windowsHide: true,
       // stdin 'ignore' = immediate EOF, so codex doesn't block "reading from stdin".
       stdio: ['ignore', 'pipe', 'pipe']
     })
@@ -522,6 +525,8 @@ class CodexSession implements Session {
     this.appServerStderr = ''
     const child = spawn('codex', this.buildAppServerArgs(), {
       cwd: this.opts.cwd,
+      env: cliEnv(),
+      windowsHide: true,
       stdio: ['pipe', 'pipe', 'pipe']
     })
     this.appServer = child
@@ -811,6 +816,8 @@ class CodexSession implements Session {
     this.cancelled = false
     const child = spawn('codex', args, {
       cwd: this.opts.cwd,
+      env: cliEnv(),
+      windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe']
     })
     this.child = child

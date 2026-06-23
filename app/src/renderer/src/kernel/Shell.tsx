@@ -10,6 +10,7 @@ function trackKernelEvent(name: string, props?: Record<string, unknown>): void {
 function Shell(): React.JSX.Element {
   const [modifyOpen, setModifyOpen] = React.useState(false)
   const [modifyWidth, setModifyWidth] = React.useState(420)
+  const [userlandLayout, setUserlandLayout] = React.useState({ fileRailOpen: false, fileRailWidth: 326 })
 
   function beginModifyResize(event: React.PointerEvent<HTMLDivElement>): void {
     event.preventDefault()
@@ -65,13 +66,32 @@ function Shell(): React.JSX.Element {
 
   return (
     <div className="kernel-shell">
-      <div className="kernel-body">
+      <div
+        className={
+          'kernel-body' +
+          (modifyOpen ? ' is-modify-open' : '') +
+          (userlandLayout.fileRailOpen ? ' is-file-rail-open' : '')
+        }
+        style={
+          {
+            '--modify-rail-width': `${modifyWidth}px`,
+            '--userland-file-rail-width': `${userlandLayout.fileRailWidth}px`
+          } as React.CSSProperties
+        }
+      >
+        <div className="kernel-drag-region kernel-drag-region-top" aria-hidden="true" />
         <main className="userland-slot">
           <UserlandHost
             modifyOpen={modifyOpen}
             onModifyOpen={() => openModify('userland')}
             onModifyClose={() => closeModify('userland')}
             onModifyToggle={() => toggleModify('userland')}
+            onUserlandLayout={(state) =>
+              setUserlandLayout({
+                fileRailOpen: state.fileRailOpen,
+                fileRailWidth: state.fileRailWidth ?? 326
+              })
+            }
           />
         </main>
 

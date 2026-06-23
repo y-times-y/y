@@ -82,6 +82,22 @@ test.describe('y chat UI', () => {
     await expect(page.getByTestId('composer-terminal')).toContainText('preview terminal')
   })
 
+  test('right header actions remain clickable while the file rail is open', async ({ page }) => {
+    await page.goto('/preview.html')
+    await page.getByTestId('file-rail-button').click()
+    await expect(page.getByTestId('file-rail')).toHaveClass(/is-open/)
+    await expect(page.getByTestId('file-rail-button')).toBeVisible()
+    await expect(page.getByTestId('terminal-dock-button')).toBeVisible()
+
+    await page.getByTestId('terminal-dock-button').click()
+    await expect(page.getByTestId('terminal-dock')).toHaveClass(/is-open/)
+    await expect(page.getByTestId('file-rail')).toHaveClass(/is-open/)
+
+    await page.getByTestId('file-rail-button').click()
+    await expect(page.getByTestId('file-rail')).not.toHaveClass(/is-open/)
+    await expect(page.getByTestId('terminal-dock')).toHaveClass(/is-open/)
+  })
+
   test('chat accepts dropped files as attachments', async ({ page }) => {
     await page.goto('/preview.html')
     await expect(page.getByTestId('y-main')).toBeVisible()
@@ -113,8 +129,8 @@ test.describe('y chat UI', () => {
       const style = getComputedStyle(element)
       return { background: style.backgroundColor, color: style.color, family: style.fontFamily, size: style.fontSize, line: style.lineHeight }
     })
-    expect(codeStyle.background).toBe('rgb(241, 237, 230)')
-    expect(codeStyle.color).toBe('rgb(41, 37, 34)')
+    expect(codeStyle.background).toBe('rgb(17, 18, 20)')
+    expect(codeStyle.color).toBe('rgb(228, 228, 228)')
     expect(codeStyle.family).toContain('ui-monospace')
     expect(codeStyle.size).toBe('13px')
     expect(codeStyle.line).toBe('21.45px')
@@ -122,7 +138,7 @@ test.describe('y chat UI', () => {
     await expect(codeBlock).toHaveCSS('margin-left', '8px')
     await expect(codeBlock).toHaveCSS('margin-right', '8px')
     await expect(codeBlock).toHaveCSS('border-top-style', 'solid')
-    await expect(codeBlock.locator('.md-code-head')).toHaveCSS('background-color', 'rgb(241, 237, 230)')
+    await expect(codeBlock.locator('.md-code-head')).toHaveCSS('background-color', 'rgb(17, 18, 20)')
   })
 
   test('sidebar chats can be renamed, archived, and auto named from intent', async ({ page }) => {
@@ -162,7 +178,7 @@ test.describe('y chat UI', () => {
     await expect(page.getByTestId('composer')).toHaveCount(0)
     await expect(page.getByTestId('markdown-preview')).toContainText('ytimesy')
     const previewCode = page.getByTestId('markdown-preview').locator('pre')
-    await expect(previewCode.first()).toHaveCSS('background-color', 'rgb(241, 237, 230)')
+    await expect(previewCode.first()).toHaveCSS('background-color', 'rgb(17, 18, 20)')
     await expect(previewCode.first()).toHaveCSS('border-radius', '12px')
     await expect(previewCode.first()).toHaveCSS('padding-left', '18px')
     await expect(page.getByTestId('markdown-preview').locator('.hljs-keyword').first()).toHaveText('from')
@@ -349,7 +365,7 @@ test.describe('y chat UI', () => {
     await expect(page.getByText('/goal is only available for Codex. Current engine: Claude Code.')).toBeVisible()
   })
 
-  test('normal sends include visible transcript context', async ({ page }) => {
+  test('normal sends only the current user prompt', async ({ page }) => {
     await page.goto('/preview.html')
     await page.evaluate(() => {
       ;(window as typeof window & { __sentPrompts?: string[] }).__sentPrompts = []
@@ -362,14 +378,7 @@ test.describe('y chat UI', () => {
     await page.getByTestId('composer-input').fill('What should we do next?')
     await page.getByTestId('send-button').click()
     const prompts = await page.evaluate(() => (window as typeof window & { __sentPrompts?: string[] }).__sentPrompts ?? [])
-    expect(prompts[prompts.length - 1]).toContain('Use this full visible y chat transcript as context')
-    expect(prompts[prompts.length - 1]).toContain('native context management/compaction behavior')
-    expect(prompts[prompts.length - 1]).toContain('[assistant: assistant]')
-    expect(prompts[prompts.length - 1]).toContain('Here is a quick example')
-    expect(prompts[prompts.length - 1]).toContain('[user]')
-    expect(prompts[prompts.length - 1]).toContain('Can you make the sidebar feel more like the reference?')
-    expect(prompts[prompts.length - 1]).toContain('[current user request]')
-    expect(prompts[prompts.length - 1]).toContain('What should we do next?')
+    expect(prompts[prompts.length - 1]).toBe('What should we do next?')
   })
 
   test('composer typing and streamed bursts stay on the lightweight path', async ({ page }) => {
@@ -480,7 +489,8 @@ test.describe('y chat UI', () => {
     await expect(page.getByTestId('thinking-block')).toContainText('Checking the app structure.')
     await expect(page.locator('.tool-activity').filter({ hasText: 'Read' })).toBeVisible()
     await new Promise((resolve) => setTimeout(resolve, 90))
-    expect(await page.locator('.modify-assistant-message').count()).toBe(assistantCountBeforeStream)
+    expect(await page.locator('.modify-assistant-message').count()).toBe(assistantCountBeforeStream + 1)
+    await expect(page.locator('.modify-assistant-message').last().getByRole('button', { name: 'Copy message' })).toHaveCount(0)
 
     await page.evaluate(() => {
       const emit = (window as typeof window & { __emitEngineEvent?: (event: AgentEvent) => void }).__emitEngineEvent
@@ -488,7 +498,6 @@ test.describe('y chat UI', () => {
       emit?.({ kind: 'text', text: 'tail' })
       emit?.({ kind: 'result', ok: true })
     })
-    await expect(page.locator('.modify-assistant-message').last()).toContainText('Read the implementation notes')
     await expect(page.locator('.modify-assistant-message').last()).toContainText('renderer. tail')
     await expect(page.locator('.modify-assistant-message').last()).not.toHaveClass(/is-streaming/)
   })
@@ -602,7 +611,8 @@ test.describe('y chat UI', () => {
       emit?.({ kind: 'text', text: 'I am still working.' })
       emit?.({ kind: 'tool', name: 'Read', phase: 'start', id: 'read-live', verb: 'Read', target: 'src/index.ts' })
     })
-    expect(await page.getByTestId('assistant-message').count()).toBe(assistantCountBeforeTurn)
+    expect(await page.getByTestId('assistant-message').count()).toBe(assistantCountBeforeTurn + 1)
+    await expect(page.getByTestId('assistant-message').last().getByRole('button', { name: 'Copy message' })).toHaveCount(0)
     await expect(page.getByTestId('binary-stream-spinner')).toBeVisible()
     await expect(page.locator('.y-engine-badge')).toHaveCount(0)
 
@@ -654,7 +664,7 @@ test.describe('y chat UI', () => {
     await expect(page.getByTestId('edited-files')).toContainText('app/panel.tsx')
     await expect(page.getByTestId('edited-files')).toContainText('+2')
     await expect(page.getByTestId('edited-files')).toContainText('-1')
-    await expect(page.getByTestId('edited-files').getByText('Undo')).toHaveCount(0)
+    await expect(page.getByTestId('edited-files').getByText('Undo')).toHaveCount(1)
     await expect(page.getByTestId('edited-files').getByText('Review')).toHaveCount(0)
   })
 
@@ -860,7 +870,7 @@ test.describe('y chat UI', () => {
       }
     })
     expect(modifyMetrics).toEqual(mainMetrics)
-    expect(mainDetailBackground).toBe('rgb(241, 237, 230)')
+    expect(mainDetailBackground).toBe('rgb(17, 18, 20)')
     await expect(read.locator('.tool-activity-detail')).toHaveCSS('background-color', 'rgb(17, 18, 20)')
 
     const edit = work.locator('.tool-activity').filter({ hasText: 'Edit' }).last()

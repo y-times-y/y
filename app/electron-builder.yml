@@ -11,6 +11,11 @@ files:
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
 asarUnpack:
   - resources/**
+extraResources:
+  - from: src/main/assets/engines
+    to: engines
+    filter:
+      - '*.png'
 win:
   executableName: y
 nsis:

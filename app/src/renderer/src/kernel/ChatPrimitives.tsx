@@ -10,6 +10,7 @@ export type ChatPrimitiveMessage = {
   verb?: string
   target?: string
   body?: string
+  failed?: boolean
   streaming?: boolean
   system?: boolean
   checkpointId?: string
@@ -291,6 +292,7 @@ export function ChatWorkSummary({
 
 function isEditableToolMessage(message: ChatPrimitiveMessage): boolean {
   if (message.role !== 'tool' || message.system) return false
+  if (message.failed || message.streaming) return false
   const verb = (message.verb || toolVerbFromName(message.name || 'tool')).toLowerCase()
   return verb === 'edit' || verb === 'write'
 }

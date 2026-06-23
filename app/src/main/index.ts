@@ -1,5 +1,6 @@
-import { app, shell, BrowserWindow, ipcMain } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, net, protocol } from 'electron'
 import { join } from 'path'
+import { pathToFileURL } from 'url'
 import { mkdir, readFile, writeFile, stat } from 'fs/promises'
 import { watch } from 'node:fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -25,9 +26,32 @@ import {
 } from './userlandGit'
 
 const AUTH_CALLBACK_PROTOCOL = 'y'
+const USERLAND_FRAME_PROTOCOL = 'y-userland'
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: USERLAND_FRAME_PROTOCOL,
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true
+    }
+  }
+])
 
 function isAuthCallbackUrl(value: string | undefined): value is string {
   return typeof value === 'string' && value.startsWith(`${AUTH_CALLBACK_PROTOCOL}://auth-callback`)
+}
+
+function isSafeExternalUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    if (url.protocol === 'https:') return true
+    if (url.protocol !== 'http:') return false
+    return ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
+  } catch {
+    return false
+  }
 }
 
 function emitAuthCallback(url: string): void {
@@ -47,6 +71,17 @@ function registerAuthProtocol(): void {
   } else {
     app.setAsDefaultProtocolClient(AUTH_CALLBACK_PROTOCOL)
   }
+}
+
+function registerUserlandFrameProtocol(): void {
+  protocol.handle(USERLAND_FRAME_PROTOCOL, (request) => {
+    const url = new URL(request.url)
+    const asset = decodeURIComponent(url.pathname).replace(/^\/+/u, '') || 'userland-frame.html'
+    if (asset !== 'userland-frame.html' && asset !== 'userland-frame-inline.js') {
+      return new Response('Not found', { status: 404 })
+    }
+    return net.fetch(pathToFileURL(join(__dirname, '../renderer', asset)).toString())
+  })
 }
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
@@ -192,7 +227,7 @@ function createWindow(): void {
   )
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
+    if (isSafeExternalUrl(details.url)) void shell.openExternal(details.url)
     return { action: 'deny' }
   })
 
@@ -212,6 +247,7 @@ app.whenReady().then(async () => {
   // Set app user model id for windows
   electronApp.setAppUserModelId('com.y.app')
   registerAuthProtocol()
+  registerUserlandFrameProtocol()
 
   // Make sure esbuild can find its binary in the packaged app (no-op in dev).
   fixEsbuildBinaryPath()

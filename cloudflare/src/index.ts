@@ -14,6 +14,15 @@ type Env = {
 }
 
 type JsonObject = Record<string, unknown>
+type RateLimitRule = {
+  name: string
+  windowSeconds: number
+  limit: number
+}
+
+type RateLimitResult =
+  | { ok: true }
+  | { ok: false; response: Response }
 
 const BRICKS = new Set([
   'browser',
@@ -45,6 +54,56 @@ const BRICK_REASONS = new Set([
 const BRICK_SURFACES = new Set(['main', 'modify'])
 const BRICK_CONFIDENCE = new Set(['low', 'medium', 'high'])
 const BRICK_ENGINES = new Set(['claude-code', 'codex'])
+const ANALYTICS_EVENTS = new Set([
+  'onboarding_viewed',
+  'onboarding_auth_selected',
+  'onboarding_step_completed',
+  'onboarding_install_command_copied',
+  'onboarding_completed',
+  'onboarding_cli_check_started',
+  'onboarding_cli_check_completed',
+  'auth_gate_viewed',
+  'auth_sign_in_started',
+  'auth_sign_in_completed',
+  'auth_sign_in_failed',
+  'auth_signed_out',
+  'settings_opened',
+  'settings_sign_in_started',
+  'settings_sign_in_completed',
+  'settings_sign_in_failed',
+  'settings_sign_out_completed',
+  'settings_sign_out_failed',
+  'feedback_dialog_opened',
+  'user_active',
+  'chat_goal_updated',
+  'chat_goal_started',
+  'chat_message_sent',
+  'chat_reset_to_message',
+  'chat_undo_edits',
+  'chat_tool_call',
+  'chat_turn_completed',
+  'chat_turn_error',
+  'chat_interrupted',
+  'chat_file_diff_opened',
+  'modify_opened',
+  'modify_closed',
+  'modify_new_chat_created',
+  'modify_history_opened',
+  'modify_history_chat_selected',
+  'modify_message_sent',
+  'modify_tool_call',
+  'modify_turn_completed',
+  'modify_turn_error',
+  'modify_interrupted',
+  'modify_verified',
+  'modify_auto_retry',
+  'modify_revert_graph_opened',
+  'modify_snapshot_restored',
+  'modify_reset_original',
+  'feedback_dialog_sent',
+  'feedback_submitted',
+  'missing_brick_detected'
+])
 const BRICK_REQUEST_KEYS = new Set([
   'id',
   'userId',
@@ -54,6 +113,20 @@ const BRICK_REQUEST_KEYS = new Set([
   'confidence',
   'engineId'
 ])
+const INGEST_RATE_LIMITS: Record<string, RateLimitRule[]> = {
+  feedback: [
+    { name: 'feedback-minute', windowSeconds: 60, limit: 3 },
+    { name: 'feedback-hour', windowSeconds: 3600, limit: 12 }
+  ],
+  events: [
+    { name: 'events-minute', windowSeconds: 60, limit: 240 },
+    { name: 'events-hour', windowSeconds: 3600, limit: 3000 }
+  ],
+  brickRequests: [
+    { name: 'brick-minute', windowSeconds: 60, limit: 12 },
+    { name: 'brick-hour', windowSeconds: 3600, limit: 120 }
+  ]
+}
 const DEFAULT_HEXCLAVE_PROJECT_ID = 'eeb236a6-5299-4457-8819-d15a1728ca38'
 const HEXCLAVE_HOSTED_HANDLER_SUFFIX = 'built-with-stack-auth.com'
 const DESKTOP_AUTH_CALLBACK_URL = 'y://auth-callback?source=hexclave'
@@ -96,6 +169,65 @@ function cleanIdentifier(value: unknown, maxLength: number): string {
 function enumValue(value: unknown, allowed: Set<string>): string {
   const input = cleanString(value, 80)
   return allowed.has(input) ? input : ''
+}
+
+function hex(buffer: ArrayBuffer): string {
+  return Array.from(new Uint8Array(buffer), (byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+async function sha256(value: string): Promise<string> {
+  return hex(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)))
+}
+
+async function rateLimitKey(request: Request, route: string, rule: RateLimitRule): Promise<string> {
+  const ip =
+    request.headers.get('cf-connecting-ip') ||
+    request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
+    'unknown'
+  const ua = request.headers.get('user-agent') || 'unknown'
+  const clientHash = await sha256(`${ip}\n${ua}`)
+  return `v1:${route}:${rule.name}:${clientHash}`
+}
+
+function rateLimitResponse(rule: RateLimitRule, retryAfter: number): Response {
+  return json(
+    { ok: false, error: 'Rate limit exceeded.' },
+    {
+      status: 429,
+      headers: {
+        'retry-after': String(retryAfter),
+        ratelimit: `${rule.name};r=0;t=${retryAfter}`,
+        'ratelimit-policy': `${rule.limit};w=${rule.windowSeconds}`
+      }
+    }
+  )
+}
+
+async function consumeRateLimit(env: Env, request: Request, route: keyof typeof INGEST_RATE_LIMITS): Promise<RateLimitResult> {
+  const now = Math.floor(Date.now() / 1000)
+  const rules = INGEST_RATE_LIMITS[route]
+
+  for (const rule of rules) {
+    const windowStart = Math.floor(now / rule.windowSeconds) * rule.windowSeconds
+    const retryAfter = Math.max(1, windowStart + rule.windowSeconds - now)
+    const bucketKey = await rateLimitKey(request, route, rule)
+    const row = await env.DB.prepare(
+      `INSERT INTO rate_limits
+        (bucket_key, window_start, count, expires_at, updated_at)
+        VALUES (?, ?, 1, ?, ?)
+        ON CONFLICT(bucket_key, window_start) DO UPDATE SET
+          count = count + 1,
+          updated_at = excluded.updated_at
+        RETURNING count`
+    )
+      .bind(bucketKey, windowStart, windowStart + rule.windowSeconds * 2, now)
+      .first<{ count: number }>()
+
+    if ((row?.count ?? 1) > rule.limit) return { ok: false, response: rateLimitResponse(rule, retryAfter) }
+  }
+
+  await env.DB.prepare('DELETE FROM rate_limits WHERE expires_at < ?').bind(now).run()
+  return { ok: true }
 }
 
 async function readJson(request: Request, maxBytes = 64_000): Promise<JsonObject | null> {
@@ -143,6 +275,7 @@ async function handleEvent(request: Request, env: Env): Promise<Response> {
 
   const name = cleanString(body.event || body.name, 160)
   if (!name) return json({ ok: false, error: 'Missing event name.' }, { status: 400 })
+  if (!ANALYTICS_EVENTS.has(name)) return json({ ok: false, error: 'Analytics event is not allowed.' }, { status: 400 })
 
   const id = cleanString(body.id, 80) || crypto.randomUUID()
   const anonymousId = cleanString(body.anonymousId, 120)
@@ -398,9 +531,21 @@ export default {
       return handleAuthHandler(request, env)
     }
 
-    if (request.method === 'POST' && url.pathname === '/api/feedback') return handleFeedback(request, env)
-    if (request.method === 'POST' && url.pathname === '/api/events') return handleEvent(request, env)
-    if (request.method === 'POST' && url.pathname === '/api/brick-requests') return handleBrickRequest(request, env)
+    if (request.method === 'POST' && url.pathname === '/api/feedback') {
+      const limited = await consumeRateLimit(env, request, 'feedback')
+      if (!limited.ok) return limited.response
+      return handleFeedback(request, env)
+    }
+    if (request.method === 'POST' && url.pathname === '/api/events') {
+      const limited = await consumeRateLimit(env, request, 'events')
+      if (!limited.ok) return limited.response
+      return handleEvent(request, env)
+    }
+    if (request.method === 'POST' && url.pathname === '/api/brick-requests') {
+      const limited = await consumeRateLimit(env, request, 'brickRequests')
+      if (!limited.ok) return limited.response
+      return handleBrickRequest(request, env)
+    }
 
     return json({ ok: false, error: 'Not found.' }, { status: 404 })
   }

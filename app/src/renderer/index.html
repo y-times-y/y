@@ -5,18 +5,47 @@
     <title>y</title>
     <!-- https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP -->
     <!-- Phase 6: scripts stay locked to 'self' (+ unsafe-eval for the Userland
-         compile seam), but we allow embedding web content (frame-src/webview)
-         and loading remote images/media so Userland can build browsers and
-         widgets. Arbitrary network still goes through the consent-gated y.net
-         brick in main, not direct renderer fetch (connect-src stays 'self'). -->
+         compile seam). Userland runs in a separate y-userland: frame origin;
+         arbitrary network still goes through the consent-gated y.net brick in
+         main, not direct renderer fetch (connect-src stays 'self'). -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https: http: file:; font-src 'self' data: https:; media-src 'self' data: https: http:; frame-src *; child-src *"
+      content="default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https: http: file:; font-src 'self' data: https:; media-src 'self' data: https: http:; frame-src * y-userland:; child-src * y-userland:"
     />
   </head>
 
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div
+        style="
+          position: fixed;
+          inset: 0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: #0a0a0b;
+          color: rgba(255, 255, 255, 0.88);
+        "
+        aria-label="Loading y"
+      >
+        <svg width="42" height="46" viewBox="0 0 84 92" aria-hidden="true">
+          <text
+            x="42"
+            y="68"
+            text-anchor="middle"
+            font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
+            font-size="90"
+            font-weight="700"
+            fill="transparent"
+            stroke="currentColor"
+            stroke-width="2.25"
+            paint-order="stroke"
+          >
+            y
+          </text>
+        </svg>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

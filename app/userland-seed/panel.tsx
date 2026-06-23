@@ -178,6 +178,7 @@ const MAX_TOTAL_PASTED_ATTACHMENT_BYTES = 240 * 1024
 const COMPOSER_MAX_HEIGHT = 164
 const CHAT_LIST_COLLAPSED_LIMIT = 5
 const ONBOARDING_DONE_KEY = 'y.onboarding.done'
+const ONBOARDING_CLI_DONE_KEY = 'y.onboarding.cli.v2.done'
 
 function trackEvent(name: string, props?: Record<string, unknown>): void {
   const analytics = (window.y as Window['y'] & { analytics?: { track: (name: string, props?: Record<string, unknown>) => Promise<unknown> } }).analytics
@@ -188,6 +189,10 @@ function trackEvent(name: string, props?: Record<string, unknown>): void {
 function isNoisyRuntimeStatus(value: string): boolean {
   const normalized = value.trim().toLowerCase()
   return !normalized || normalized === '...' || normalized === 'requesting' || normalized === 'requesting...' || normalized === 'reasoning' || normalized === 'codex turn started'
+}
+
+function isCompactionStatus(value: string): boolean {
+  return /\bcompact(?:ing|ed)?\b/i.test(value)
 }
 
 function BinaryYMark() {
@@ -795,51 +800,6 @@ function FileIcon({ name, size = 22 }: { name: string; size?: number }) {
   )
   const meta = fileIconMeta(name)
   return badge(meta.label, meta.bg, meta.fg ?? '#ffffff')
-}
-
-function transcriptText(value: string | undefined): string {
-  return (value || '').replace(/\s+\n/g, '\n').trim()
-}
-
-function contextLine(message: Msg): string | null {
-  if (message.role === 'thinking') return null
-  if (message.role === 'user') return `[user]\n${transcriptText(message.text)}`
-  if (message.role === 'assistant') {
-    const label = LABELS[message.engineId || ''] || message.engineId || 'assistant'
-    return `[assistant: ${label}]\n${transcriptText(message.text)}`
-  }
-  if (message.role === 'tool') {
-    if (message.system) return `[y system note]\n${transcriptText(message.name)}`
-    const target = message.target ? ` ${message.target}` : ''
-    const body = message.body ? `\n${transcriptText(message.body)}` : ''
-    return `[tool: ${message.verb || message.name || 'tool'}${target}]${body}`
-  }
-  return null
-}
-
-function buildContextPrompt(history: Msg[], request: string): string {
-  const lines = settleContextHistory(history)
-    .map(contextLine)
-    .filter((line): line is string => Boolean(line))
-  if (!lines.length) return request
-  return (
-    'Use this full visible y chat transcript as context. It may include replies from different providers. ' +
-    'If the transcript is long, use your native context management/compaction behavior. ' +
-    'Continue from it, but answer only the current request.\n\n' +
-    lines.join('\n\n---\n\n') +
-    '\n\n---\n\n[current user request]\n' +
-    request
-  )
-}
-
-function settleContextHistory(history: Msg[]): Msg[] {
-  return history
-    .filter((message) => !(message.role === 'thinking' && !message.text?.trim()))
-    .map((message) => (
-      message.streaming && (message.role === 'tool' || message.role === 'thinking')
-        ? { ...message, streaming: false }
-        : message
-    ))
 }
 
 function esc(s: string) {
@@ -1560,7 +1520,7 @@ function SettingsView({
         <section className="y-settings-section"><h2>General</h2><div className="y-settings-card"><div><strong>Completion sound</strong><p>Play a subtle sound when a long-running agent turn finishes.</p></div><SettingsToggle checked={soundEnabled} onChange={onSoundEnabled} /></div></section>
         <section className="y-settings-section"><h2>Agents</h2><p className="y-settings-lead">y auto-detects each local CLI's install and sign-in state on the system.</p><div className="y-agent-grid">{engines.map((engine) => { const entry = catalog.find((item) => item.engine === engine); const label = entry?.label || LABELS[engine] || engine; const tool = cliStatus?.tools.find((t) => t.id === engine); const statusText = !tool ? 'Detecting...' : !tool.installed ? 'Not installed' : tool.authenticated ? 'Signed in' : 'Installed, not signed in'; return <div className="y-agent-card" key={engine}><div className="y-agent-title"><EngineMark id={engine} logoUrl={entry?.logoUrl} size={18} /><strong>{label}</strong></div><span>{statusText}</span><div className="y-settings-actions"><button type="button" className="y-settings-action" onClick={() => onAuthStatus(engine)}>Auth status</button><button type="button" className="y-settings-action" onClick={() => onDoctor(engine)}>Doctor</button></div></div> })}</div></section>
         <section className="y-settings-section"><h2>MCP & Plugins</h2><p className="y-settings-lead">Open each engine's native plugin and MCP views. y displays the real CLI output in the terminal.</p><div className="y-agent-grid">{engines.map((engine) => { const entry = catalog.find((item) => item.engine === engine); const label = entry?.label || LABELS[engine] || engine; return <div className="y-agent-card" key={engine}><div className="y-agent-title"><EngineMark id={engine} logoUrl={entry?.logoUrl} size={18} /><strong>{label}</strong></div><p>Inspect native integrations for this engine.</p><div className="y-settings-actions"><button type="button" className="y-settings-action" onClick={() => onOpenPlugins(engine)}>Plugins</button><button type="button" className="y-settings-action" onClick={() => onOpenMcp(engine)}>MCP</button></div></div> })}</div></section>
-        <section className="y-settings-section"><h2>Modify Chat</h2><div className="y-settings-card"><div><strong>Reset to original app</strong><p>Restore the bundled y chat interface and replace the current customized Userland app.</p></div><button type="button" className="y-settings-action danger" onClick={onResetOriginalApp}>Reset</button></div></section>
+        <section className="y-settings-section"><h2>Modify Chat</h2><div className="y-settings-card"><div><strong>Reset to original app</strong><p>Restore the bundled y chat interface and replace the current customized app UI.</p></div><button type="button" className="y-settings-action danger" onClick={onResetOriginalApp}>Reset</button></div></section>
       </div>
     </div>
   )
@@ -1568,12 +1528,10 @@ function SettingsView({
 
 function OnboardingView({
   catalog,
-  onFinish,
-  onOpenProject
+  onFinish
 }: {
   catalog: EngineModelCatalog[]
   onFinish: () => void
-  onOpenProject: () => void
 }) {
   const [cliResult, setCliResult] = useState<OnboardingCliCheckResult | null>(null)
   const [checking, setChecking] = useState(false)
@@ -1608,6 +1566,7 @@ function OnboardingView({
 
   function complete(): void {
     window.localStorage.setItem(ONBOARDING_DONE_KEY, 'true')
+    window.localStorage.setItem(ONBOARDING_CLI_DONE_KEY, 'true')
     trackEvent('onboarding_completed', { cliChecked: Boolean(cliResult) })
     onFinish()
   }
@@ -1689,7 +1648,6 @@ function OnboardingView({
         <div className="y-onboarding-footer">
           {allReady ? <p className="y-onboarding-ready-note">You're all set.</p> : <span />}
           <div className="y-onboarding-footer-end">
-            <button type="button" className="y-onboarding-secondary" onClick={onOpenProject}>Open folder</button>
             <button type="button" className="y-onboarding-primary" onClick={complete}>Start using y</button>
           </div>
         </div>
@@ -1708,7 +1666,11 @@ export default function Chat() {
   const [accountUser, setAccountUser] = useState<KernelAuthUser | null>(null)
   const [accountBusy, setAccountBusy] = useState(false)
   const [accountChecking, setAccountChecking] = useState(false)
-  const [onboardingDone, setOnboardingDone] = useState(() => window.localStorage.getItem(ONBOARDING_DONE_KEY) === 'true')
+  const [onboardingDone, setOnboardingDone] = useState(
+    () =>
+      window.localStorage.getItem(ONBOARDING_DONE_KEY) === 'true' &&
+      window.localStorage.getItem(ONBOARDING_CLI_DONE_KEY) === 'true'
+  )
   const [cliStatus, setCliStatus] = useState<OnboardingCliCheckResult | null>(null)
   const [soundEnabled, setSoundEnabled] = useState(() => storedBoolean('y.settings.sound', true))
   const [searchQuery, setSearchQuery] = useState('')
@@ -1719,6 +1681,7 @@ export default function Chat() {
   const [projects, setProjects] = useState<Project[]>([])
   const [activeProjectId, setActiveProjectId] = useState<string | undefined>(undefined)
   const [activeChatId, setActiveChatId] = useState<string | undefined>(undefined)
+  const [activeWorkspacePath, setActiveWorkspacePath] = useState<string | undefined>(undefined)
   const [appReady, setAppReady] = useState(PREVIEW)
   const [engines, setEngines] = useState<string[]>(PREVIEW ? ['claude-code', 'codex'] : [])
   const [catalog, setCatalog] = useState<EngineModelCatalog[]>(PREVIEW ? PREVIEW_CATALOG : [])
@@ -1813,7 +1776,7 @@ export default function Chat() {
     async function refreshAccount(): Promise<void> {
       setAccountChecking(true)
       try {
-        const restored = await window.yKernelAuth.restore()
+        const restored = await window.y.auth.load()
         if (cancelled) return
         if (restored.ok && restored.session) setAccountUser(restored.session.user)
         else setAccountUser(null)
@@ -1981,7 +1944,7 @@ export default function Chat() {
     }
     let disposed = false
     const timer = setTimeout(() => {
-      void window.y.app.searchFiles(activeProjectId, mentionQuery).then(function (res) {
+      void window.y.app.searchFiles(activeProjectId, mentionQuery, activeWorkspacePath).then(function (res) {
         if (!disposed && res.ok) setFileSearchResults(res.files)
       })
     }, 100)
@@ -1989,7 +1952,7 @@ export default function Chat() {
       disposed = true
       clearTimeout(timer)
     }
-  }, [mentionQuery, activeProjectId])
+  }, [mentionQuery, activeProjectId, activeWorkspacePath])
 
   function chatEngine(chat?: AppChat): string {
     return chat?.engineId || 'claude-code'
@@ -2001,6 +1964,10 @@ export default function Chat() {
 
   function chatOptions(chat?: AppChat): EngineRunOptions {
     return chat?.runOptions || defaultRunOptions()
+  }
+
+  function chatWorkspacePath(project: Project | undefined, chat: AppChat | undefined): string | undefined {
+    return chat?.runOptions?.workingDirectory?.trim() || project?.path
   }
 
   function isIsolatedChat(chat: AppChat, project: Project): boolean {
@@ -2097,9 +2064,11 @@ export default function Chat() {
     const nextModel = chatModel(chat, nextEngine)
     const runtime = chat?.id ? runtimesRef.current[chat.id] : undefined
     const fallbackSessionId = PREVIEW && chat?.id ? 'preview' : undefined
+    const workspacePath = chatWorkspacePath(project, chat)
     setActiveProjectId(project?.id)
     setActiveChatId(chat?.id)
-    activeRef.current = { projectId: project?.id, chatId: chat?.id, path: project?.path }
+    setActiveWorkspacePath(workspacePath)
+    activeRef.current = { projectId: project?.id, chatId: chat?.id, path: workspacePath }
     sidRef.current = runtime?.sessionId ?? fallbackSessionId ?? null
     setSessionId(runtime?.sessionId ?? fallbackSessionId ?? null)
     setEngineId(nextEngine)
@@ -2334,6 +2303,7 @@ export default function Chat() {
         verb,
         target: e.target ?? prev.target,
         body: e.body ?? prev.body,
+        failed: e.failed ?? prev.failed,
         streaming: isLive
       }
       return isLive ? next : mergeAdjacentSameFileEdit(next)
@@ -2351,6 +2321,7 @@ export default function Chat() {
       verb,
       target: e.target,
       body: e.body,
+      failed: e.failed,
       streaming: isLive
     }
     const merge =
@@ -2358,7 +2329,7 @@ export default function Chat() {
       Boolean(e.id && prev.id === e.id)
     if (merge) {
       const merged = base.slice(0, -1).concat([
-        { ...prev, ...next, target: e.target ?? prev.target, body: e.body ?? prev.body }
+        { ...prev, ...next, target: e.target ?? prev.target, body: e.body ?? prev.body, failed: e.failed ?? prev.failed }
       ])
       return isLive ? merged : mergeAdjacentSameFileEdit(merged)
     }
@@ -2720,7 +2691,6 @@ export default function Chat() {
       : ''
     const promptParts = [fileSection, pastedSection, trimmed].filter(Boolean)
     const prompt = promptParts.join('\n\n')
-    const contextualPrompt = buildContextPrompt(history, prompt)
     trackEvent('chat_message_sent', {
       chatId,
       projectId: project?.id,
@@ -2746,10 +2716,10 @@ export default function Chat() {
     })
     setRuntime(chatId, { busy: true, startedAt: Date.now(), status: '...', error: '', goalBacked })
     if (PREVIEW) {
-      void window.y.engine.send(targetSession, contextualPrompt)
+      void window.y.engine.send(targetSession, prompt)
       return true
     }
-    void window.y.engine.send(targetSession, contextualPrompt)
+    void window.y.engine.send(targetSession, prompt)
     return true
   }
 
@@ -3199,6 +3169,11 @@ export default function Chat() {
 		  }
 
   useEffect(() => {
+    if (window.parent === window) return
+    window.parent.postMessage({ type: 'y:userland-layout', fileRailOpen, fileRailWidth }, '*')
+  }, [fileRailOpen, fileRailWidth])
+
+  useEffect(() => {
     if (PREVIEW || !window.y.modify) return
     return window.y.modify.onChange((open) => {
       setModifyOpen(open)
@@ -3355,7 +3330,7 @@ export default function Chat() {
   }, [appReady])
 
   useEffect(() => {
-    if (!appReady || !activeProjectId) return
+    if (!appReady || !activeProjectId || !activeWorkspacePath) return
     const off = window.y.app.onFilesChanged(function (payload) {
       if (payload.projectId !== activeProjectId) return
       const loaded = Object.keys(projectDirectoriesRef.current)
@@ -3371,23 +3346,23 @@ export default function Chat() {
           if (Object.prototype.hasOwnProperty.call(projectDirectoriesRef.current, changedPath)) affected.add(changedPath)
         }
       }
-      for (const directory of affected) void loadProjectDirectory(activeProjectId, directory, true)
+      for (const directory of affected) void loadProjectDirectory(activeProjectId, directory, true, activeWorkspacePath)
     })
     setProjectDirectories({})
     projectDirectoriesRef.current = {}
     pendingFolderRefreshRef.current.clear()
     setExpandedFolders(new Set())
-    void loadProjectDirectory(activeProjectId, '', true)
-    void window.y.app.watchFiles(activeProjectId)
+    void loadProjectDirectory(activeProjectId, '', true, activeWorkspacePath)
+    void window.y.app.watchFiles(activeProjectId, activeWorkspacePath)
     return function () {
       off()
       void window.y.app.unwatchFiles(activeProjectId)
     }
-  }, [appReady, activeProjectId])
+  }, [appReady, activeProjectId, activeWorkspacePath])
 
   useEffect(() => {
     closeFileView()
-  }, [activeProjectId])
+  }, [activeProjectId, activeWorkspacePath])
 
   useEffect(() => {
     if (!appReady || !activeProjectId || !activeChatId) return
@@ -3506,7 +3481,7 @@ export default function Chat() {
     setAccountBusy(true)
     trackEvent('settings_sign_in_started')
     try {
-      const res = await window.yKernelAuth.signIn()
+      const res = await window.y.auth.signIn()
       if (!res.ok) {
         trackEvent('settings_sign_in_failed')
         showToast(res.error || 'Could not sign in.')
@@ -3528,7 +3503,7 @@ export default function Chat() {
     if (accountBusy) return
     setAccountBusy(true)
     try {
-      const res = await window.yKernelAuth.clear()
+      const res = await window.y.auth.clear()
       if (!res.ok) {
         trackEvent('settings_sign_out_failed')
         showToast(res.error || 'Could not sign out.')
@@ -3686,9 +3661,9 @@ export default function Chat() {
 	    addAttachments(files)
 	  }
 
-	  async function loadProjectDirectory(projectId: string, directory = '', force = false) {
+	  async function loadProjectDirectory(projectId: string, directory = '', force = false, workspaceRoot = activeWorkspacePath) {
     const key = directory.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/$/, '')
-    const requestKey = `${projectId}:${key}`
+    const requestKey = `${projectId}:${workspaceRoot || ''}:${key}`
     if (!force && Object.prototype.hasOwnProperty.call(projectDirectoriesRef.current, key)) return
     if (loadingFoldersRef.current.has(requestKey)) {
       if (force) pendingFolderRefreshRef.current.add(requestKey)
@@ -3696,11 +3671,11 @@ export default function Chat() {
     }
     loadingFoldersRef.current.add(requestKey)
     setLoadingFolders(new Set(loadingFoldersRef.current))
-    const res = await window.y.app.listDirectory(projectId, key)
+    const res = await window.y.app.listDirectory(projectId, key, workspaceRoot)
     loadingFoldersRef.current.delete(requestKey)
     setLoadingFolders(new Set(loadingFoldersRef.current))
     const queuedRefresh = pendingFolderRefreshRef.current.delete(requestKey)
-    if (activeRef.current.projectId !== projectId) return
+    if (activeRef.current.projectId !== projectId || activeRef.current.path !== workspaceRoot) return
     if (res.ok) {
       setProjectDirectories(function (current) {
         const next = { ...current, [key]: res.entries }
@@ -3716,7 +3691,7 @@ export default function Chat() {
       })
     }
     if (queuedRefresh) {
-      void loadProjectDirectory(projectId, key, true)
+      void loadProjectDirectory(projectId, key, true, workspaceRoot)
     }
   }
 
@@ -3724,14 +3699,14 @@ export default function Chat() {
     const project = findActiveProject(projectsRef.current, activeProjectId)
     if (!project) return file
     const rawPath = (file.path || file.relPath || file.name).replace(/\\/g, '/')
-    const projectRoot = project.path.replace(/\\/g, '/').replace(/\/$/u, '')
+    const projectRoot = (activeWorkspacePath || project.path).replace(/\\/g, '/').replace(/\/$/u, '')
     const relFromRoot = rawPath.startsWith(`${projectRoot}/`) ? rawPath.slice(projectRoot.length + 1) : rawPath.replace(/^\.?\//u, '')
     const wanted = [file.relPath, relFromRoot, rawPath, file.name]
       .filter((value): value is string => Boolean(value))
       .map((value) => value.replace(/\\/g, '/').replace(/^\.?\//u, ''))
     const query = file.name || rawPath.split('/').filter(Boolean).pop() || ''
     if (!query) return file
-    const result = await window.y.app.searchFiles(project.id, query)
+    const result = await window.y.app.searchFiles(project.id, query, activeWorkspacePath)
     if (!result.ok || !result.files.length) return file
     const exact = result.files.find((candidate) => {
       const rel = (candidate.relPath || candidate.path).replace(/\\/g, '/')
@@ -3749,12 +3724,12 @@ export default function Chat() {
     setFileRailOpen(true)
     setFileStatus('Opening...')
     let currentFile = file
-    let res = await window.y.app.readProjectFile(activeProjectId, currentFile.path || currentFile.relPath || currentFile.name)
+    let res = await window.y.app.readProjectFile(activeProjectId, currentFile.path || currentFile.relPath || currentFile.name, activeWorkspacePath)
     if (!res.ok) {
       const candidate = await resolveFileCandidate(file)
       if (candidate.path !== file.path || candidate.relPath !== file.relPath) {
         currentFile = candidate
-        res = await window.y.app.readProjectFile(activeProjectId, candidate.path || candidate.relPath || candidate.name)
+        res = await window.y.app.readProjectFile(activeProjectId, candidate.path || candidate.relPath || candidate.name, activeWorkspacePath)
       }
     }
     if (!res.ok) {
@@ -3830,7 +3805,7 @@ export default function Chat() {
   async function saveActiveFile() {
     if (!activeFile) return
     setFileStatus('Saving...')
-    const res = await window.y.app.writeProjectFile(activeProjectId, activeFile.path, fileContent)
+    const res = await window.y.app.writeProjectFile(activeProjectId, activeFile.path, fileContent, activeWorkspacePath)
     if (!res.ok) {
       setFileStatus(res.error || 'Could not save file.')
       return
@@ -3842,7 +3817,7 @@ export default function Chat() {
     setFileStatus('Saved')
     const relPath = (activeFile.relPath || activeFile.name).replace(/\\/g, '/')
     const slash = relPath.lastIndexOf('/')
-    void loadProjectDirectory(activeProjectId!, slash === -1 ? '' : relPath.slice(0, slash), true)
+    void loadProjectDirectory(activeProjectId!, slash === -1 ? '' : relPath.slice(0, slash), true, activeWorkspacePath)
     setTimeout(() => setFileStatus((status) => (status === 'Saved' ? '' : status)), 1400)
   }
 
@@ -4047,6 +4022,9 @@ export default function Chat() {
   const activeGoalRunning = Boolean(activeRuntime?.busy && activeRuntime?.goalBacked)
   const liveStartedAt = activeRuntime?.startedAt
   const liveDurationMs = busy && liveStartedAt ? Math.max(0, elapsedTick - liveStartedAt) : 0
+  const liveWorkLabel = status && isCompactionStatus(status)
+    ? status
+    : `Working for ${formatLiveDuration(liveDurationMs)}`
   return (
     <>
       <style>{`
@@ -4078,6 +4056,14 @@ export default function Chat() {
           line-height: 1.45;
           -webkit-font-smoothing: antialiased;
           --y-toggle-x: 10px;
+        }
+        .y-app button:focus,
+        .y-app button:focus-visible {
+          outline: none;
+          box-shadow: none;
+        }
+        .y-app button::-moz-focus-inner {
+          border: 0;
         }
         html.platform-darwin .y-app {
           --y-toggle-x: 79px;
@@ -4135,7 +4121,7 @@ export default function Chat() {
           width: calc(var(--y-toggle-x) + 28px);
           flex-shrink: 0;
           height: 44px;
-          -webkit-app-region: no-drag;
+          -webkit-app-region: drag;
         }
         .y-sidebar-chrome {
           flex: 1;
@@ -4290,7 +4276,7 @@ export default function Chat() {
         }
         .y-chat-isolated-icon {
           flex: 0 0 16px; width: 16px; height: 16px; display: inline-flex; align-items: center; justify-content: center;
-          color: rgba(222,190,156,0.72);
+          color: rgba(255,255,255,0.9);
         }
         .y-chat-rename {
           flex: 1; min-width: 0; height: 22px; padding: 0 5px; border-radius: 6px;
@@ -4326,11 +4312,15 @@ export default function Chat() {
           width: 8px; height: 8px; border-radius: 50%; background: #6f9fd8;
         }
         .y-chat-spinner {
-          width: 10px; height: 10px; border-radius: 50%;
-          border: 2px solid rgba(174,181,191,0.18); border-top-color: rgba(194,201,211,0.82);
-          animation: y-spin 0.9s linear infinite;
+          width: 7px; height: 7px; border-radius: 50%;
+          background: rgba(247,247,244,0.82);
+          box-shadow: 0 0 0 0 rgba(247,247,244,0.22);
+          animation: y-status-pulse 1.15s ease-in-out infinite;
         }
-        @keyframes y-spin { to { transform: rotate(360deg); } }
+        @keyframes y-status-pulse {
+          0%, 100% { opacity: 0.46; transform: scale(0.86); box-shadow: 0 0 0 0 rgba(247,247,244,0.14); }
+          50% { opacity: 1; transform: scale(1); box-shadow: 0 0 0 4px rgba(247,247,244,0.05); }
+        }
         .y-sidebar-foot {
           padding: 8px 10px 0; border-top: 1px solid var(--y-border); margin-top: auto;
           display: flex; align-items: center; gap: 6px;
@@ -4347,15 +4337,16 @@ export default function Chat() {
 	          background: var(--y-main); position: relative; overflow: hidden;
 	          transition: flex 0.26s cubic-bezier(0.4, 0, 0.2, 1);
 	        }
-	        .y-header {
+        .y-header {
           flex-shrink: 0; height: 44px; display: flex; align-items: stretch;
           padding: 0 14px;
           border-bottom: 1px solid rgba(255,255,255,0.06);
+          -webkit-app-region: drag;
         }
         .y-header-lead {
           width: 0;
           flex-shrink: 0;
-          -webkit-app-region: no-drag;
+          -webkit-app-region: drag;
         }
         .y-app.sidebar-closed .y-header-lead { width: calc(var(--y-toggle-x) + 28px); }
         .y-header-drag {
@@ -5309,7 +5300,6 @@ export default function Chat() {
         .y-onboarding p { margin: 0; color: var(--y-text-2); line-height: 1.55; }
         .y-onboarding-panel {
           margin-top: 26px;
-          min-height: 320px;
           border: 1px solid var(--y-border);
           border-radius: 20px;
           background: rgba(0,0,0,0.16);
@@ -5836,28 +5826,40 @@ export default function Chat() {
 	              >
 	                <Icon name="terminal" size={14} />
 	              </button>
-	              {!fileRailOpen && (
-	                <button
+	              <button
                   type="button"
-                  className="y-icon-btn"
+                  className={'y-icon-btn' + (fileRailOpen ? ' active' : '')}
                   data-testid="file-rail-button"
-                  aria-label="Open files"
-                  title="Open files"
+                  aria-label={fileRailOpen ? 'Hide files' : 'Open files'}
+                  title={fileRailOpen ? 'Hide files' : 'Open files'}
                   onClick={() => {
-                    setFileRailOpen(true)
+                    if (fileRailOpen) {
+                      setFileRailOpen(false)
+                      return
+                    }
                     if (modifyOpen && !PREVIEW) window.y.modify.close()
+                    setFileRailOpen(true)
                   }}
                   disabled={!activeProjectId}
                 >
                   <Icon name="files" size={14} />
                 </button>
-              )}
-              {!PREVIEW && window.y.modify && !modifyOpen ? (
+              {!PREVIEW && window.y.modify ? (
                 <button
                   type="button"
-                  className="y-modify-btn"
+                  className={'y-modify-btn' + (modifyOpen ? ' active' : '')}
                   data-testid="modify-button"
-                  onClick={() => window.y.modify.toggle()}
+                  aria-label={modifyOpen ? 'Hide Modify' : 'Open Modify'}
+                  title={modifyOpen ? 'Hide Modify' : 'Open Modify'}
+                  aria-pressed={modifyOpen}
+                  onClick={() => {
+                    if (modifyOpen) {
+                      window.y.modify.close()
+                      return
+                    }
+                    setFileRailOpen(false)
+                    window.y.modify.open()
+                  }}
                 >
                   <Icon name="edit" size={14} />
                   Modify
@@ -5899,7 +5901,6 @@ export default function Chat() {
             <OnboardingView
               catalog={catalog}
               onFinish={() => setOnboardingDone(true)}
-              onOpenProject={() => void openProject()}
             />
           ) : <>
           {activeFile ? (
@@ -6020,12 +6021,6 @@ export default function Chat() {
                 <p className="y-empty-copy">
                   {hasProject ? 'Ask anything about your code.' : 'Open a folder to start a real project chat.'}
                 </p>
-                {!hasProject ? (
-                  <button type="button" className="y-empty-action" onClick={() => void openProject()}>
-                    <Icon name="folder" size={15} />
-                    Open folder
-                  </button>
-                ) : null}
               </div>
             </div>
           ) : (
@@ -6112,7 +6107,7 @@ export default function Chat() {
 	                  }
 	                  return null
 	                })}
-                {busy ? <div className="y-live-work"><BinarySpinner /><span>Working for {formatLiveDuration(liveDurationMs)}</span></div> : null}
+                {busy ? <div className="y-live-work"><BinarySpinner /><span>{liveWorkLabel}</span></div> : null}
                 {!busy && status ? <div className="y-status">{status}</div> : null}
                 {error ? <div className="y-error">{error}</div> : null}
               </div>

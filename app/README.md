@@ -1,34 +1,27 @@
-# app
+# y desktop app
 
-An Electron application with React and TypeScript
+This folder contains the Electron + React + TypeScript desktop app for **y**.
 
-## Recommended IDE Setup
+For the product overview, screenshots, download link, and architecture summary, read the root [README](../README.md).
 
-- [VSCode](https://code.visualstudio.com/) + [ESLint](https://marketplace.visualstudio.com/items?itemName=dbaeumer.vscode-eslint) + [Prettier](https://marketplace.visualstudio.com/items?itemName=esbenp.prettier-vscode)
-
-## Project Setup
-
-### Install
+## Development
 
 ```bash
-$ pnpm install
+pnpm install
+pnpm dev
 ```
 
-### Development
+## Checks
 
 ```bash
-$ pnpm dev
+pnpm typecheck
+pnpm test:ui
 ```
 
-### Build
+## Build
 
 ```bash
-# For windows
-$ pnpm build:win
-
-# For macOS
-$ pnpm build:mac
-
-# For Linux
-$ pnpm build:linux
+pnpm build:mac
 ```
+
+Generated release artifacts are written to `app/dist/` and are intentionally ignored by git.

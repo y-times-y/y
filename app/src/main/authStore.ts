@@ -34,6 +34,11 @@ type StoredAuthSession = {
   savedAt: string
 }
 
+type PublicAuthSession = {
+  user: AuthUser
+  savedAt: string
+}
+
 class AuthRefreshError extends Error {
   constructor(
     message: string,
@@ -127,9 +132,19 @@ function authSessionFile(): string {
   return join(authDir(), 'session.bin')
 }
 
+function publicAuthSessionFile(): string {
+  return join(authDir(), 'session-public.json')
+}
+
+function publicSession(session: StoredAuthSession | null): PublicAuthSession | null {
+  if (!session) return null
+  return { user: session.user, savedAt: session.savedAt }
+}
+
 function emitAuthChanged(session: StoredAuthSession | null): void {
+  const payload = publicSession(session)
   for (const window of BrowserWindow.getAllWindows()) {
-    if (!window.isDestroyed()) window.webContents.send('kernel-auth:changed', session)
+    if (!window.isDestroyed()) window.webContents.send('kernel-auth:changed', payload)
   }
 }
 
@@ -206,12 +221,26 @@ async function readStoredAuthSession(): Promise<StoredAuthSession | null> {
     const user = cleanUser(parsed.user)
     if (!tokens || !user) return null
     return { tokens, user, savedAt: cleanString(parsed.savedAt, 80) || new Date().toISOString() }
+  } catch (err) {
+    if (!err || typeof err !== 'object' || Reflect.get(err, 'code') !== 'ENOENT') {
+      await rm(authSessionFile(), { force: true }).catch(() => undefined)
+    }
+    return null
+  }
+}
+
+async function readPublicAuthSession(): Promise<PublicAuthSession | null> {
+  try {
+    const parsed = JSON.parse(await readFile(publicAuthSessionFile(), 'utf-8')) as Partial<PublicAuthSession>
+    const user = cleanUser(parsed.user)
+    if (!user) return null
+    return { user, savedAt: cleanString(parsed.savedAt, 80) || new Date().toISOString() }
   } catch {
     return null
   }
 }
 
-async function saveStoredAuthSession(payload: unknown): Promise<{ ok: boolean; user?: AuthUser; error?: string }> {
+async function saveStoredAuthSession(payload: unknown): Promise<{ ok: boolean; session?: PublicAuthSession; user?: AuthUser; error?: string }> {
   if (!safeStorage.isEncryptionAvailable()) {
     return { ok: false, error: 'Secure token storage is not available on this device.' }
   }
@@ -222,16 +251,19 @@ async function saveStoredAuthSession(payload: unknown): Promise<{ ok: boolean; u
   if (!tokens || !user) return { ok: false, error: 'Invalid auth session.' }
 
   const session: StoredAuthSession = { tokens, user, savedAt: new Date().toISOString() }
+  const sessionJson = JSON.stringify(session)
+  const publicJson = JSON.stringify(publicSession(session))
   await mkdir(authDir(), { recursive: true })
-  await writeFile(authSessionFile(), safeStorage.encryptString(JSON.stringify(session)), { mode: 0o600 })
+  await writeFile(authSessionFile(), safeStorage.encryptString(sessionJson), { mode: 0o600 })
+  await writeFile(publicAuthSessionFile(), publicJson, { mode: 0o600 })
   await identifyAnalyticsUser({ userId: user.id, email: user.email })
   emitAuthChanged(session)
-  return { ok: true, user }
+  return { ok: true, session: publicSession(session) ?? undefined, user }
 }
 
 async function clearStoredAuthSession(): Promise<{ ok: boolean; error?: string }> {
   try {
-    await rm(authSessionFile(), { force: true })
+    await Promise.all([rm(authSessionFile(), { force: true }), rm(publicAuthSessionFile(), { force: true })])
     emitAuthChanged(null)
     return { ok: true }
   } catch (err) {
@@ -353,7 +385,11 @@ function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-async function restoreStoredAuthSession(): Promise<{ ok: boolean; session?: StoredAuthSession | null; error?: string }> {
+async function loadPublicAuthSession(): Promise<{ ok: boolean; session: PublicAuthSession | null }> {
+  return { ok: true, session: await readPublicAuthSession() }
+}
+
+async function restoreStoredAuthSession(): Promise<{ ok: boolean; session?: PublicAuthSession | null; error?: string }> {
   const stored = await readStoredAuthSession()
   if (!stored?.tokens?.refreshToken) return { ok: true, session: null }
 
@@ -362,7 +398,7 @@ async function restoreStoredAuthSession(): Promise<{ ok: boolean; session?: Stor
     const user = await loadUser(tokens)
     const saved = await saveStoredAuthSession({ tokens, user })
     if (!saved.ok) throw new Error(saved.error || 'Could not save auth session.')
-    return { ok: true, session: { tokens, user, savedAt: new Date().toISOString() } }
+    return { ok: true, session: saved.session ?? null }
   } catch (err) {
     if (err instanceof AuthRefreshError && (err.status === 401 || err.status === 403)) {
       await clearStoredAuthSession()
@@ -428,10 +464,9 @@ async function startHostedSignIn(): Promise<{ ok: boolean; user?: AuthUser; erro
 }
 
 export function registerAuthBricks(): void {
-  ipcMain.handle('kernel-auth:load', async () => ({ ok: true, session: await readStoredAuthSession() }))
+  ipcMain.handle('kernel-auth:load', () => loadPublicAuthSession())
   ipcMain.handle('kernel-auth:restore', () => restoreStoredAuthSession())
   ipcMain.handle('kernel-auth:signIn', () => startHostedSignIn())
-  ipcMain.handle('kernel-auth:save', (_event, payload: unknown) => saveStoredAuthSession(payload))
   ipcMain.handle('kernel-auth:clear', () => clearStoredAuthSession())
   ipcMain.handle('kernel-auth:openExternal', (_event, url: string) => {
     if (!/^https:\/\//u.test(url) && !/^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?\//u.test(url)) {

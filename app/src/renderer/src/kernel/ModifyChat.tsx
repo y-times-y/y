@@ -822,7 +822,7 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
       setRevertGraph((current) => ({
         ...current,
         loading: false,
-        error: result.ok ? '' : result.error || 'Could not load Userland history.',
+        error: result.ok ? '' : result.error || 'Could not load app history.',
         entries: result.entries ?? []
       }))
     })
@@ -841,7 +841,7 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
         return
       }
       trackModifyEvent('modify_snapshot_restored', { hash: hash.slice(0, 12) })
-      addSystemNote(`Restored Userland snapshot ${result.hash || hash.slice(0, 7)}.`)
+      addSystemNote(`Restored app snapshot ${result.hash || hash.slice(0, 7)}.`)
       closeRevertGraph()
       await start(engineId, modelId, runOptions, true)
     },
@@ -857,7 +857,7 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
       return
     }
     trackModifyEvent('modify_reset_original')
-    addSystemNote('Reset Userland to the original app.')
+    addSystemNote('Reset y to the original app.')
     closeRevertGraph()
     await start(engineId, modelId, runOptions, true)
   }, [busy, closeRevertGraph, engineId, modelId, runOptions, start])
@@ -1304,7 +1304,7 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
                 </div>
               ) : null}
             </div>
-            <button type="button" className="modify-icon-button" onClick={openRevertGraph} aria-label="Revert Userland" title="Revert Userland">
+            <button type="button" className="modify-icon-button" onClick={openRevertGraph} aria-label="Revert app" title="Revert app">
               <ModifyResetIcon size={16} />
             </button>
             <button type="button" className="modify-icon-button accent" onClick={onClose} aria-label="Close Modify" title="Close Modify">
@@ -1315,11 +1315,11 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
       </div>
 
       {revertGraph.open ? (
-        <div className="modify-revert-overlay" role="dialog" aria-modal="true" aria-label="Revert Userland">
+        <div className="modify-revert-overlay" role="dialog" aria-modal="true" aria-label="Revert app">
           <div className="modify-revert-panel">
             <div className="modify-revert-head">
               <div>
-                <strong>Revert Userland</strong>
+                <strong>Revert app</strong>
                 <p>Pick a saved point in the app graph, or reset back to the original app.</p>
               </div>
               <button type="button" className="modify-message-action" aria-label="Close revert graph" onClick={closeRevertGraph}>

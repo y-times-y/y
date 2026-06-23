@@ -14,7 +14,7 @@ export default defineConfig({
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   webServer: {
-    command: 'pnpm exec electron-vite dev',
+    command: 'pnpm exec electron-vite dev --rendererOnly',
     url: 'http://localhost:5173/preview.html',
     reuseExistingServer: !process.env.CI,
     timeout: 120_000

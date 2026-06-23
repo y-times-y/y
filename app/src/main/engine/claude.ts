@@ -9,6 +9,7 @@ import type {
   Session,
   StartOpts
 } from './types'
+import { cliEnv } from './cliEnv'
 import { formatToolFinal, formatToolStream, type ToolPresentation } from './toolFormat'
 
 // The subset of Claude Code's stream-json output we read. The CLI emits one of
@@ -88,6 +89,85 @@ function splitList(value: string | undefined): string[] {
 function trimValue(value: string | undefined): string | undefined {
   const trimmed = value?.trim()
   return trimmed || undefined
+}
+
+function isAskUserQuestionTool(name: string): boolean {
+  const normalized = name.replace(/[_\-\s]/g, '').toLowerCase()
+  return normalized === 'askuserquestion'
+}
+
+function isMutationTool(name: string): boolean {
+  const normalized = name.replace(/[_\-\s]/g, '').toLowerCase()
+  return normalized === 'edit' || normalized === 'write'
+}
+
+function stringFromValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+function optionText(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return stringFromValue(value)
+  const option = value as Record<string, unknown>
+  const label = stringFromValue(option.label) ?? stringFromValue(option.value)
+  const description = stringFromValue(option.description)
+  if (!label) return description
+  return description ? `${label}: ${description}` : label
+}
+
+function questionText(value: unknown): string | undefined {
+  if (typeof value === 'string') return stringFromValue(value)
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const question = value as Record<string, unknown>
+  const prompt =
+    stringFromValue(question.question) ??
+    stringFromValue(question.prompt) ??
+    stringFromValue(question.text) ??
+    stringFromValue(question.message) ??
+    stringFromValue(question.header)
+  const options = Array.isArray(question.options)
+    ? question.options.map(optionText).filter((item): item is string => Boolean(item))
+    : []
+  if (!prompt && options.length === 0) return undefined
+  return [prompt, options.length ? options.map((option) => `- ${option}`).join('\n') : undefined]
+    .filter(Boolean)
+    .join('\n')
+}
+
+function askUserQuestionText(input: Record<string, unknown> | null): string | undefined {
+  if (!input) return undefined
+  const direct =
+    stringFromValue(input.question) ??
+    stringFromValue(input.prompt) ??
+    stringFromValue(input.text) ??
+    stringFromValue(input.message)
+  if (direct) return direct
+  if (Array.isArray(input.questions)) {
+    const questions = input.questions.map(questionText).filter((item): item is string => Boolean(item))
+    if (questions.length) return questions.join('\n\n')
+  }
+  return undefined
+}
+
+function parseToolInput(json: string): Record<string, unknown> | null {
+  if (!json.trim()) return null
+  try {
+    const input = JSON.parse(json) as unknown
+    return input && typeof input === 'object' && !Array.isArray(input)
+      ? (input as Record<string, unknown>)
+      : null
+  } catch {
+    return null
+  }
+}
+
+function askUserQuestionFallback(json: string): string | undefined {
+  const match = json.match(/"(?:question|prompt|text|message)"\s*:\s*"((?:[^"\\]|\\.)*)"/)
+  if (!match?.[1]) return undefined
+  try {
+    return JSON.parse(`"${match[1]}"`) as string
+  } catch {
+    return match[1].replace(/\\n/g, '\n').replace(/\\"/g, '"')
+  }
 }
 
 function splitArgs(value: string | undefined): string[] {
@@ -227,6 +307,7 @@ class ClaudeSession implements Session {
   private child: ChildProcess | null = null
   private cancelled = false
   private streamedText = false // did we already stream deltas this turn?
+  private turnHadOutput = false // assistant text/thinking/tool output, not startup hooks
   private pendingResult: Extract<AgentEvent, { kind: 'result' }> | null = null
   private pendingSteer: string | null = null
   private blocks = new Map<number, ToolBlock>() // in-flight tool_use blocks by index
@@ -263,6 +344,7 @@ class ClaudeSession implements Session {
       return
     }
     this.streamedText = false
+    this.turnHadOutput = false
     this.cancelled = false
     this.pendingResult = null
     this.blocks.clear()
@@ -396,6 +478,8 @@ class ClaudeSession implements Session {
 
     const child = spawn('claude', args, {
       cwd: this.opts.cwd,
+      env: cliEnv(),
+      windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe']
     })
     this.child = child
@@ -424,7 +508,7 @@ class ClaudeSession implements Session {
       this.emit({ kind: 'error', message: `Failed to start claude: ${err.message}` })
     })
 
-    child.on('close', (code) => {
+    child.on('close', (code, signal) => {
       const wasCancelled = this.cancelled
       const pendingSteer = this.pendingSteer
       this.cancelled = false
@@ -439,8 +523,13 @@ class ClaudeSession implements Session {
         const result = this.pendingResult
         this.pendingResult = null
         this.emit(result)
+      } else if ((code === -2 || signal === 'SIGINT') && !stderr.trim()) {
+        if (this.turnHadOutput) this.emit({ kind: 'result', ok: true })
+        else this.emit({ kind: 'error', message: `Claude stopped before producing output${code !== null ? ` (code ${code})` : signal ? ` (${signal})` : ''}.` })
       } else if (code !== 0 && code !== null) {
         this.emit({ kind: 'error', message: stderr.trim() || `claude exited with code ${code}` })
+      } else if (signal && !stderr.trim()) {
+        this.emit({ kind: 'result', ok: false, summary: `Claude turn stopped by ${signal}.` })
       }
     })
   }
@@ -510,6 +599,8 @@ class ClaudeSession implements Session {
     this.cancelled = false
     const child = spawn('claude', args, {
       cwd: this.opts.cwd,
+      env: cliEnv(),
+      windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe']
     })
     this.child = child
@@ -758,6 +849,7 @@ class ClaudeSession implements Session {
     this.child?.kill('SIGTERM')
     this.child = null
     this.pendingResult = null
+    this.turnHadOutput = false
     this.blocks.clear()
   }
 
@@ -815,12 +907,14 @@ class ClaudeSession implements Session {
         if (obj.event) this.handleStreamEvent(obj.event)
         break
       case 'assistant':
+        this.turnHadOutput = true
         // Always surface tool_use from the full assistant message — it has the
         // complete input even when stream-json redacts thinking or we miss deltas.
         this.emitAssistantTools(obj.message)
         if (!this.streamedText) this.emitAssistantText(obj.message)
         break
       case 'user':
+        this.turnHadOutput = true
         this.emitToolResults(obj.message)
         break
       case 'prompt_suggestion': {
@@ -846,9 +940,11 @@ class ClaudeSession implements Session {
       const d = ev.delta
       if (d?.type === 'text_delta' && typeof d.text === 'string') {
         this.streamedText = true
+        this.turnHadOutput = true
         this.emit({ kind: 'text', text: d.text })
       } else if (d?.type === 'thinking_delta' && typeof d.thinking === 'string' && d.thinking) {
         // Claude Code redacts extended thinking in stream-json — skip empty deltas.
+        this.turnHadOutput = true
         this.emit({ kind: 'thinking', text: d.thinking })
       } else if (
         d?.type === 'input_json_delta' &&
@@ -860,13 +956,17 @@ class ClaudeSession implements Session {
     } else if (ev.type === 'content_block_start') {
       const block = ev.content_block
       if (block?.type === 'tool_use' && typeof block.name === 'string' && typeof idx === 'number') {
+        this.turnHadOutput = true
         const seed =
           block.input && Object.keys(block.input).length > 0 ? JSON.stringify(block.input) : ''
         this.blocks.set(idx, { id: block.id, name: block.name, json: seed })
-        this.emitTool(block.name, block.id, 'start', formatToolStream(block.name, seed))
+        if (!isAskUserQuestionTool(block.name)) {
+          this.emitTool(block.name, block.id, 'start', formatToolStream(block.name, seed))
+        }
       } else if (block?.type === 'text' && this.streamedText) {
         // Claude sends its between-tool narration as separate text blocks. Insert a
         // paragraph break so they don't render as one run-on line in the chat.
+        this.turnHadOutput = true
         this.emit({ kind: 'text', text: '\n\n' })
       }
     } else if (ev.type === 'content_block_stop' && typeof idx === 'number') {
@@ -891,20 +991,21 @@ class ClaudeSession implements Session {
       if (block?.type !== 'tool_result' || !block.tool_use_id) continue
       const previous = this.toolPresentations.get(block.tool_use_id)
       if (!previous) continue
-      const verb = previous.presentation.verb.toLowerCase()
-      if (verb === 'edit' || verb === 'write') continue
       const body = typeof block.content === 'string'
         ? block.content
         : Array.isArray(block.content)
           ? block.content.map((part) => part?.text).filter((text): text is string => typeof text === 'string').join('\n')
           : undefined
+      const failed = block.is_error === true
+      const resultBody = body?.trim()
       this.emit({
         kind: 'tool',
         name: previous.name,
         id: block.tool_use_id,
         phase: 'end',
         ...previous.presentation,
-        body: body?.trim() || (block.is_error ? 'Tool failed.' : undefined)
+        body: failed ? resultBody || 'Tool failed.' : previous.presentation.body || resultBody,
+        failed
       })
     }
   }
@@ -913,8 +1014,10 @@ class ClaudeSession implements Session {
     const block = this.blocks.get(index)
     if (!block) return
     block.json += chunk
+    if (isAskUserQuestionTool(block.name)) return
     const presentation =
       phase === 'end' ? formatToolFinal(block.name, block.json) : formatToolStream(block.name, block.json)
+    this.turnHadOutput = true
     this.emitTool(block.name, block.id, phase, presentation)
   }
 
@@ -922,7 +1025,18 @@ class ClaudeSession implements Session {
     if (!this.blocks.has(index)) return
     const block = this.blocks.get(index)!
     if (block.id) this.streamedToolIds.add(block.id)
-    this.updateToolInput(index, '', 'end')
+    if (isAskUserQuestionTool(block.name)) {
+      const text = askUserQuestionText(parseToolInput(block.json)) ?? askUserQuestionFallback(block.json)
+      this.emit({
+        kind: 'text',
+        text: text
+          ? `\n\n${text}`
+          : '\n\nClaude needs your input before continuing. Reply in the composer to continue.'
+      })
+    } else {
+      const phase = isMutationTool(block.name) ? 'update' : 'end'
+      this.updateToolInput(index, '', phase)
+    }
     this.blocks.delete(index)
   }
 
@@ -931,6 +1045,7 @@ class ClaudeSession implements Session {
     if (!Array.isArray(content)) return
     for (const block of content) {
       if (block?.type === 'text' && typeof block.text === 'string') {
+        this.turnHadOutput = true
         this.emit({ kind: 'text', text: block.text })
       }
     }
@@ -943,8 +1058,18 @@ class ClaudeSession implements Session {
       if (block?.type !== 'tool_use' || typeof block.name !== 'string') continue
       // Skip tools that were already emitted via streaming — prevents duplicate entries.
       if (block.id && this.streamedToolIds.has(block.id)) continue
+      if (isAskUserQuestionTool(block.name)) {
+        const text = askUserQuestionText(block.input ?? null)
+        this.emit({
+          kind: 'text',
+          text: text
+            ? `\n\n${text}`
+            : '\n\nClaude needs your input before continuing. Reply in the composer to continue.'
+        })
+        continue
+      }
       const json = block.input ? JSON.stringify(block.input) : ''
-      this.emitTool(block.name, block.id, 'end', formatToolFinal(block.name, json))
+      this.emitTool(block.name, block.id, isMutationTool(block.name) ? 'update' : 'end', formatToolFinal(block.name, json))
     }
   }
 }

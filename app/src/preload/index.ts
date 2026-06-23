@@ -420,16 +420,18 @@ const y = {
       ipcRenderer.invoke('app:selectFiles', projectId),
     searchFiles: (
       projectId: string | undefined,
-      query: string
+      query: string,
+      workspaceRoot?: string
     ): Promise<{ ok: boolean; files: SelectedFile[]; error?: string }> =>
-      ipcRenderer.invoke('app:searchFiles', projectId, query),
+      ipcRenderer.invoke('app:searchFiles', projectId, query, workspaceRoot),
     listDirectory: (
       projectId: string | undefined,
-      directory?: string
+      directory?: string,
+      workspaceRoot?: string
     ): Promise<{ ok: boolean; entries: ProjectDirectoryEntry[]; error?: string }> =>
-      ipcRenderer.invoke('app:listDirectory', projectId, directory),
-    watchFiles: (projectId?: string): Promise<{ ok: boolean; error?: string }> =>
-      ipcRenderer.invoke('app:watchFiles', projectId),
+      ipcRenderer.invoke('app:listDirectory', projectId, directory, workspaceRoot),
+    watchFiles: (projectId?: string, workspaceRoot?: string): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke('app:watchFiles', projectId, workspaceRoot),
     unwatchFiles: (projectId?: string): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('app:unwatchFiles', projectId),
     onFilesChanged: (cb: (payload: { projectId: string; paths: string[] }) => void): (() => void) => {
@@ -439,15 +441,17 @@ const y = {
     },
     readProjectFile: (
       projectId: string | undefined,
-      filePath: string
+      filePath: string,
+      workspaceRoot?: string
     ): Promise<ProjectFileResult> =>
-      ipcRenderer.invoke('app:readProjectFile', projectId, filePath),
+      ipcRenderer.invoke('app:readProjectFile', projectId, filePath, workspaceRoot),
     writeProjectFile: (
       projectId: string | undefined,
       filePath: string,
-      content: string
+      content: string,
+      workspaceRoot?: string
     ): Promise<ProjectFileResult> =>
-      ipcRenderer.invoke('app:writeProjectFile', projectId, filePath, content),
+      ipcRenderer.invoke('app:writeProjectFile', projectId, filePath, content, workspaceRoot),
     updateChat: (
       projectId: string,
       chatId: string,
@@ -485,6 +489,17 @@ const y = {
       const listener = (_e: unknown, state: AppState): void => cb(state)
       ipcRenderer.on('app:stateChanged', listener)
       return () => ipcRenderer.removeListener('app:stateChanged', listener)
+    }
+  },
+  auth: {
+    load: () => ipcRenderer.invoke('kernel-auth:load'),
+    restore: () => ipcRenderer.invoke('kernel-auth:restore'),
+    signIn: () => ipcRenderer.invoke('kernel-auth:signIn'),
+    clear: () => ipcRenderer.invoke('kernel-auth:clear'),
+    onChanged: (cb: (session: unknown) => void): (() => void) => {
+      const listener = (_event: unknown, session: unknown): void => cb(session)
+      ipcRenderer.on('kernel-auth:changed', listener)
+      return () => ipcRenderer.removeListener('kernel-auth:changed', listener)
     }
   },
   feedback: {
@@ -566,25 +581,6 @@ const yKernelAuth = {
   load: () => ipcRenderer.invoke('kernel-auth:load'),
   restore: () => ipcRenderer.invoke('kernel-auth:restore'),
   signIn: () => ipcRenderer.invoke('kernel-auth:signIn'),
-  save: (payload: {
-    tokens: { accessToken: string; refreshToken: string }
-    user: {
-      id: string
-      email?: string
-      displayName?: string
-      profileImageUrl?: string
-      connectedAccounts?: Array<{
-        provider: string
-        providerAccountId: string
-        profile?: {
-          username?: string
-          displayName?: string
-          avatarUrl?: string
-          profileUrl?: string
-        }
-      }>
-    }
-  }) => ipcRenderer.invoke('kernel-auth:save', payload),
   clear: () => ipcRenderer.invoke('kernel-auth:clear'),
   openExternal: (url: string) => ipcRenderer.invoke('kernel-auth:openExternal', url),
   onCallback: (cb: (url: string) => void): (() => void) => {

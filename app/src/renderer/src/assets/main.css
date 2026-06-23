@@ -35,6 +35,16 @@ body,
   outline: none;
 }
 
+button:focus,
+button:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+button::-moz-focus-inner {
+  border: 0;
+}
+
 #root {
   height: 100vh;
 }
@@ -44,7 +54,32 @@ body,
   position: fixed;
   inset: 0;
   z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: #0a0a0b;
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.y-boot-loading-mark {
+  width: 42px;
+  height: 46px;
+  display: block;
+  opacity: 0.88;
+  animation: y-boot-loading-mark-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes y-boot-loading-mark-pulse {
+  0%,
+  100% {
+    opacity: 0.44;
+    transform: scale(0.98);
+  }
+
+  50% {
+    opacity: 0.9;
+    transform: scale(1);
+  }
 }
 
 .y-login {
@@ -63,7 +98,6 @@ body,
   right: 0;
   z-index: 10;
   height: 38px;
-  pointer-events: none;
   -webkit-app-region: drag;
 }
 
@@ -318,6 +352,27 @@ code {
   min-height: 0;
   display: flex;
   position: relative;
+}
+
+.kernel-drag-region {
+  position: absolute;
+  top: 0;
+  z-index: 24;
+  height: 44px;
+  -webkit-app-region: drag;
+}
+
+.kernel-drag-region-top {
+  left: 122px;
+  right: 210px;
+}
+
+.kernel-body.is-modify-open .kernel-drag-region-top {
+  right: calc(var(--modify-rail-width, 420px) + 210px);
+}
+
+.kernel-body.is-file-rail-open .kernel-drag-region-top {
+  right: calc(var(--userland-file-rail-width, 326px) + 210px);
 }
 
 /* ---------- Userland: the moddable slot (the main area) ---------- */
@@ -1762,6 +1817,7 @@ html.is-modify-resizing .modify-rail {
 .modify-edited-file {
   font-family: var(--y-mono);
   font-size: 12px;
+  line-height: normal;
   color: #e4e4e4;
 }
 
@@ -2149,7 +2205,7 @@ html.is-modify-resizing .modify-rail {
   justify-content: center;
   height: 100%;
   color: rgba(255, 255, 255, 0.88);
-  pointer-events: none;
+  pointer-events: auto;
 }
 
 .userland-loading-mark {

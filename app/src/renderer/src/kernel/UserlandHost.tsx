@@ -18,6 +18,12 @@ type UserlandShellState = {
   fullscreen: boolean
 }
 
+type UserlandLayoutState = {
+  type: 'y:userland-layout'
+  fileRailOpen: boolean
+  fileRailWidth?: number
+}
+
 type BridgeRequest = {
   type: 'y:bridge-request'
   id: string
@@ -68,6 +74,7 @@ type StorageMutationMessage = StorageSetMessage | StorageRemoveMessage | Storage
 type FrameMessage =
   | UserlandFrameReady
   | UserlandFrameVerdict
+  | UserlandLayoutState
   | BridgeRequest
   | BridgeSubscribe
   | BridgeUnsubscribe
@@ -101,6 +108,10 @@ const USERLAND_CALLS = new Set([
   'app.setActive',
   'app.setProjectOpen',
   'app.removeProject',
+  'auth.load',
+  'auth.restore',
+  'auth.signIn',
+  'auth.clear',
   'feedback.submit',
   'analytics.track',
   'clipboard.writeText',
@@ -114,10 +125,7 @@ const USERLAND_CALLS = new Set([
   'terminal.start',
   'terminal.write',
   'terminal.resize',
-  'terminal.kill',
-  'kernelAuth.restore',
-  'kernelAuth.signIn',
-  'kernelAuth.clear'
+  'terminal.kill'
 ])
 
 const USERLAND_SUBSCRIPTIONS = new Set([
@@ -126,6 +134,7 @@ const USERLAND_SUBSCRIPTIONS = new Set([
   'engine.onEvent',
   'app.onFilesChanged',
   'app.onStateChanged',
+  'auth.onChanged',
   'terminal.onEvent'
 ])
 
@@ -134,9 +143,8 @@ function bridgeKey(path: string[]): string {
 }
 
 function getBridgeFunction(path: string[]): (...args: unknown[]) => unknown {
-  let target: unknown = path[0] === 'kernelAuth' ? window.yKernelAuth : window.y
-  const parts = path[0] === 'kernelAuth' ? path.slice(1) : path
-  for (const part of parts) {
+  let target: unknown = window.y
+  for (const part of path) {
     if (!target || typeof target !== 'object') throw new Error(`Bridge path "${bridgeKey(path)}" is not available`)
     target = (target as Record<string, unknown>)[part]
   }
@@ -145,7 +153,7 @@ function getBridgeFunction(path: string[]): (...args: unknown[]) => unknown {
 }
 
 function frameUrl(): string {
-  return new URL('userland-frame.html', window.location.href).toString()
+  return 'y-userland://frame/userland-frame.html'
 }
 
 function readStorage(storage: Storage): Record<string, string> {
@@ -209,12 +217,14 @@ function UserlandHost({
   modifyOpen,
   onModifyOpen,
   onModifyClose,
-  onModifyToggle
+  onModifyToggle,
+  onUserlandLayout
 }: {
   modifyOpen: boolean
   onModifyOpen: () => void
   onModifyClose: () => void
   onModifyToggle: () => void
+  onUserlandLayout: (state: { fileRailOpen: boolean; fileRailWidth?: number }) => void
 }): React.JSX.Element {
   const iframeRef = React.useRef<HTMLIFrameElement | null>(null)
   const subscriptionsRef = React.useRef(new Map<string, () => void>())
@@ -231,11 +241,12 @@ function UserlandHost({
 
   const [error, setError] = React.useState('')
   const [crash, setCrash] = React.useState('')
+  const [frameError, setFrameError] = React.useState('')
   const [path, setPath] = React.useState('')
   const [snap, setSnap] = React.useState<{ hash: string; count: number } | null>(null)
   const [loaded, setLoaded] = React.useState(false)
   const [agentWorking, setAgentWorking] = React.useState(() => latestAgentWorking())
-  const [src] = React.useState(frameUrl)
+  const [frameSrc] = React.useState(frameUrl)
 
   const autoRolledBackRef = React.useRef(false)
   const recoveryRef = React.useRef(false)
@@ -276,6 +287,7 @@ function UserlandHost({
   const load = React.useCallback(async () => {
     setError('')
     setCrash('')
+    setFrameError('')
     setLoaded(false)
     setPath(await window.y.userland.getPath())
 
@@ -346,7 +358,7 @@ function UserlandHost({
     (message: BridgeRequest): void => {
       const key = bridgeKey(message.path)
       if (!USERLAND_CALLS.has(key)) {
-        respondToFrame(message.id, { ok: false, error: `Userland cannot call ${key}` })
+        respondToFrame(message.id, { ok: false, error: `The app UI cannot call ${key}` })
         return
       }
       if (key === 'modify.open') {
@@ -423,8 +435,16 @@ function UserlandHost({
           setError(msg)
           publishVerdict({ outcome: 'compile-error', error: msg })
         } else {
-          handleCrash(message.error ?? 'Userland crashed at runtime')
+          handleCrash(message.error ?? 'The app UI crashed at runtime')
         }
+        return
+      }
+
+      if (message.type === 'y:userland-layout') {
+        onUserlandLayout({
+          fileRailOpen: Boolean(message.fileRailOpen),
+          fileRailWidth: typeof message.fileRailWidth === 'number' ? message.fileRailWidth : undefined
+        })
         return
       }
 
@@ -460,6 +480,7 @@ function UserlandHost({
     handleBridgeSubscribe,
     handleBridgeUnsubscribe,
     handleCrash,
+    onUserlandLayout,
     settleHealthyRender
   ])
 
@@ -468,6 +489,16 @@ function UserlandHost({
     void load()
     return off
   }, [load])
+
+  React.useEffect(() => {
+    if (loaded || error || crash || frameError || !pendingLoadRef.current) return
+    const token = pendingLoadRef.current.token
+    const timeout = window.setTimeout(() => {
+      if (loaded || activeTokenRef.current !== token) return
+      setFrameError('The app UI did not finish loading. Reload y, or revert to the previous snapshot.')
+    }, 10000)
+    return () => window.clearTimeout(timeout)
+  }, [crash, error, frameError, loaded])
 
   React.useEffect(() => subscribeAgentWorking(setAgentWorking), [])
 
@@ -497,8 +528,8 @@ function UserlandHost({
     return () => window.removeEventListener('y:modify-open-file', onOpenFile)
   }, [postToFrame])
 
-  const showDevChrome = Boolean(error || crash)
-  const blockedWhileAgentWorking = agentWorking && Boolean(error || crash)
+  const showDevChrome = Boolean(error || crash || frameError)
+  const blockedWhileAgentWorking = agentWorking && Boolean(error || crash || frameError)
 
   return (
     <div className="userland-host">
@@ -529,7 +560,7 @@ function UserlandHost({
           </div>
         ) : error ? (
           <div className="userland-recovery">
-            <strong>Userland failed to compile.</strong>
+            <strong>The app UI failed to compile.</strong>
             <pre className="userland-error">{error}</pre>
             <div className="userland-toolbar">
               <button className="btn" onClick={() => void revertAndReload()}>
@@ -542,7 +573,7 @@ function UserlandHost({
           </div>
         ) : crash ? (
           <div className="userland-recovery">
-            <strong>Userland crashed at runtime.</strong>
+            <strong>The app UI crashed at runtime.</strong>
             <pre className="userland-error">{crash}</pre>
             <p className="userland-path">
               Auto-rollback to the last snapshot didn&apos;t recover it. Fix the code and reload, or
@@ -557,19 +588,34 @@ function UserlandHost({
               </button>
             </div>
           </div>
+        ) : frameError ? (
+          <div className="userland-recovery">
+            <strong>The app UI failed to load.</strong>
+            <pre className="userland-error">{frameError}</pre>
+            <div className="userland-toolbar">
+              <button className="btn" onClick={() => void load()}>
+                Reload
+              </button>
+              <button className="btn" onClick={() => void revertAndReload()}>
+                Revert to previous snapshot
+              </button>
+            </div>
+          </div>
         ) : (
           <>
             {!loaded ? (
-              <div className="userland-loading" aria-label="Loading userland">
+              <div className="userland-loading" aria-label="Loading y">
                 <UserlandLoadingMark />
               </div>
             ) : null}
             <iframe
               ref={iframeRef}
               className="userland-frame"
-              title="Userland"
-              src={src}
-              sandbox="allow-scripts allow-forms allow-popups allow-downloads"
+              title=""
+              aria-label="y"
+              src={frameSrc}
+              sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"
+              onError={() => setFrameError('The app UI failed to load. Reload y, or revert to the previous snapshot.')}
               onLoad={() => {
                 frameReadyRef.current = true
                 postToFrame(shellStateRef.current)

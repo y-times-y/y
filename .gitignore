@@ -5,6 +5,9 @@ node_modules/
 **/.wrangler/
 **/playwright-report/
 **/test-results/
+.playwright-mcp/
+app/index.js
+y-glyph-test.png
 *.tsbuildinfo
 browser-state-check.png
 demo-state*.png

@@ -46,13 +46,34 @@ function BinaryRain(): React.JSX.Element {
   )
 }
 
+function BootLoadingMark(): React.JSX.Element {
+  return (
+    <svg className="y-boot-loading-mark" viewBox="0 0 84 92" aria-hidden="true">
+      <text
+        x="42"
+        y="68"
+        textAnchor="middle"
+        fontFamily="ui-monospace, SFMono-Regular, Menlo, monospace"
+        fontSize="90"
+        fontWeight="700"
+        fill="transparent"
+        stroke="currentColor"
+        strokeWidth="2.25"
+        paintOrder="stroke"
+      >
+        y
+      </text>
+    </svg>
+  )
+}
+
 function AuthGate({ children }: { children: React.ReactNode }): React.JSX.Element {
   const [status, setStatus] = React.useState<AuthStatus>('checking')
   const [error, setError] = React.useState<string>('')
-  const [authStatus, setAuthStatus] = React.useState('')
   const [busy, setBusy] = React.useState(false)
   const [browserOpened, setBrowserOpened] = React.useState(false)
   const signInAttemptRef = React.useRef(0)
+  const activeSignInRef = React.useRef(false)
 
   React.useEffect(() => {
     void window.y.analytics.track('auth_gate_viewed')
@@ -60,30 +81,32 @@ function AuthGate({ children }: { children: React.ReactNode }): React.JSX.Elemen
 
   React.useEffect(() => {
     let cancelled = false
-    async function restore(): Promise<void> {
-      const restored = await window.yKernelAuth.restore()
-      if (cancelled) return
-      setStatus(restored.ok && restored.session ? 'signed-in' : 'signed-out')
-      if (restored.ok && restored.session) {
-        setBusy(false)
-        setBrowserOpened(false)
-        setAuthStatus('')
-      }
-    }
     const off = window.yKernelAuth.onChanged((session) => {
       setStatus(session ? 'signed-in' : 'signed-out')
       if (session) void window.y.analytics.track('auth_sign_in_completed', { source: 'browser' })
       if (!session) {
         setBusy(false)
-        setAuthStatus('')
         setBrowserOpened(false)
       }
     })
-    const offCallback = window.yKernelAuth.onCallback(() => {
-      setAuthStatus('Returning to y. Completing sign in.')
-      void restore()
-    })
-    void restore()
+    const offCallback = window.yKernelAuth.onCallback(() => {})
+    async function loadPublicSession(): Promise<void> {
+      try {
+        const loaded = await window.yKernelAuth.load()
+        if (cancelled) return
+        if (loaded.ok && loaded.session) {
+          setStatus('signed-in')
+          void window.y.analytics.track('auth_sign_in_completed', { source: 'cached' })
+        } else {
+          setStatus('signed-out')
+        }
+      } catch (err) {
+        if (cancelled) return
+        setStatus('signed-out')
+        setError(getErrorMessage(err))
+      }
+    }
+    void loadPublicSession()
     return () => {
       cancelled = true
       off()
@@ -96,14 +119,13 @@ function AuthGate({ children }: { children: React.ReactNode }): React.JSX.Elemen
     signInAttemptRef.current = attempt
     setBusy(true)
     setBrowserOpened(true)
+    activeSignInRef.current = true
     setError('')
-    setAuthStatus('Browser opened. Sign in there, then approve y desktop to finish.')
     void window.y.analytics.track('auth_sign_in_started', { source: 'login' })
     try {
       const result = await window.yKernelAuth.signIn()
       if (signInAttemptRef.current !== attempt) return
       if (!result.ok) throw new Error(result.error || 'Could not sign in.')
-      setAuthStatus('Completing sign in.')
       setStatus('signed-in')
       setError('')
       void window.y.analytics.track('auth_sign_in_completed', { source: 'login' })
@@ -111,16 +133,24 @@ function AuthGate({ children }: { children: React.ReactNode }): React.JSX.Elemen
       if (signInAttemptRef.current !== attempt) return
       const message = getErrorMessage(err)
       setError(message)
-      setAuthStatus('')
       setStatus('signed-out')
       void window.y.analytics.track('auth_sign_in_failed', { source: 'login' })
     } finally {
-      if (signInAttemptRef.current === attempt) setBusy(false)
+      if (signInAttemptRef.current === attempt) {
+        activeSignInRef.current = false
+        setBusy(false)
+      }
     }
   }
 
   if (status === 'signed-in') return <>{children}</>
-  if (status === 'checking') return <div className="y-auth-boot" aria-hidden="true" />
+  if (status === 'checking') {
+    return (
+      <div className="y-auth-boot" aria-label="Loading y">
+        <BootLoadingMark />
+      </div>
+    )
+  }
 
   return (
     <main className="y-login" data-testid="auth-gate">
@@ -140,7 +170,6 @@ function AuthGate({ children }: { children: React.ReactNode }): React.JSX.Elemen
               {busy ? 'OPENING...' : 'SIGN IN TO Y'}
             </button>
 
-            {authStatus ? <div className="y-login-status">{authStatus}</div> : null}
             {browserOpened && busy ? (
               <button type="button" className="y-login-retry" onClick={() => void signIn()}>
                 Open again

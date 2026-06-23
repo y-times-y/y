@@ -9,6 +9,46 @@ type XtermTerminalProps = {
   fontSize?: number
 }
 
+const XTERM_STYLE_ID = 'y-xterm-runtime-styles'
+const XTERM_RUNTIME_CSS = `
+.xterm { cursor: text; position: relative; user-select: none; -webkit-user-select: none; }
+.xterm.focus, .xterm:focus { outline: none; }
+.xterm .xterm-helpers { position: absolute; top: 0; z-index: 5; }
+.xterm .xterm-helper-textarea {
+  position: absolute; left: -9999em; top: 0; z-index: -5;
+  width: 0; height: 0; margin: 0; padding: 0; border: 0;
+  opacity: 0; white-space: nowrap; overflow: hidden; resize: none;
+}
+.xterm .composition-view { display: none; position: absolute; white-space: nowrap; z-index: 1; }
+.xterm .composition-view.active { display: block; }
+.xterm .xterm-viewport {
+  position: absolute; inset: 0; overflow-y: scroll; cursor: default;
+}
+.xterm .xterm-screen { position: relative; }
+.xterm .xterm-screen canvas { position: absolute; left: 0; top: 0; }
+.xterm-char-measure-element {
+  display: inline-block; visibility: hidden; position: absolute;
+  top: 0; left: -9999em; line-height: normal;
+}
+.xterm .xterm-accessibility:not(.debug),
+.xterm .xterm-message {
+  position: absolute; inset: 0; z-index: 10; color: transparent; pointer-events: none;
+}
+.xterm .xterm-accessibility-tree { font-family: monospace; user-select: text; white-space: pre; }
+.xterm .live-region { position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden; }
+.xterm-dim { opacity: 1 !important; }
+.xterm-underline-1 { text-decoration: underline; }
+.xterm-strikethrough { text-decoration: line-through; }
+`
+
+function ensureXtermStyles(ownerDocument: Document): void {
+  if (ownerDocument.getElementById(XTERM_STYLE_ID)) return
+  const style = ownerDocument.createElement('style')
+  style.id = XTERM_STYLE_ID
+  style.textContent = XTERM_RUNTIME_CSS
+  ownerDocument.head.appendChild(style)
+}
+
 function XtermTerminal({ id, running, initialText, fontSize = 12 }: XtermTerminalProps): React.JSX.Element {
   const hostRef = React.useRef<HTMLDivElement | null>(null)
   const termRef = React.useRef<Terminal | null>(null)
@@ -23,6 +63,7 @@ function XtermTerminal({ id, running, initialText, fontSize = 12 }: XtermTermina
   React.useEffect(() => {
     const host = hostRef.current
     if (!host) return
+    ensureXtermStyles(host.ownerDocument)
     const term = new Terminal({
       cursorBlink: true,
       convertEol: true,

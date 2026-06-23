@@ -18,6 +18,7 @@ export type AgentEvent =
       verb?: string // lowercase action shown inline: read, edit…
       target?: string // file, pattern, or command
       body?: string // diff preview or snippet
+      failed?: boolean // true when the CLI reported the tool result as failed
     } // tool activity
   | { kind: 'result'; ok: boolean; summary?: string } // the turn finished
   | { kind: 'error'; message: string } // something went wrong

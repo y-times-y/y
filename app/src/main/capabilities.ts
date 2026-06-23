@@ -1,6 +1,6 @@
 import { app, dialog, ipcMain, BrowserWindow } from 'electron'
 import { join, resolve, dirname, sep } from 'node:path'
-import { mkdir, readFile, writeFile, readdir, rm } from 'node:fs/promises'
+import { mkdir, readFile, writeFile, readdir, rm, realpath } from 'node:fs/promises'
 
 // ---- Phase 6: the brick-box ----
 // The Kernel hands Userland GENERAL capabilities (network, files, …) instead of
@@ -45,13 +45,13 @@ const PROMPTS: Record<Cap, { message: string; detail: string }> = {
   network: {
     message: 'Allow network access?',
     detail:
-      'The current Userland code wants to make network requests (fetch URLs and APIs ' +
-      'through y). Allow this only if you trust what Userland is running.'
+      'The current y UI wants to make network requests (fetch URLs and APIs ' +
+      'through y). Allow this only if you trust the current app customization.'
   },
   files: {
     message: 'Allow file access?',
     detail:
-      'The current Userland code wants to read and write files in its own private ' +
+      'The current y UI wants to read and write files in its own private ' +
       'workspace folder. It cannot reach anything outside that folder.'
   }
 }
@@ -87,6 +87,43 @@ function resolveInWorkspace(rel: string): string {
   if (abs !== root && !abs.startsWith(root + sep)) {
     throw new Error('Path escapes the workspace')
   }
+  return abs
+}
+
+async function realWorkspaceRoot(): Promise<string> {
+  return realpath(workspaceDir())
+}
+
+function assertInsideWorkspace(root: string, target: string): void {
+  if (target !== root && !target.startsWith(root + sep)) {
+    throw new Error('Path escapes the workspace')
+  }
+}
+
+async function resolveExistingWorkspacePath(rel: string): Promise<string> {
+  const root = await realWorkspaceRoot()
+  const abs = resolveInWorkspace(rel)
+  const target = await realpath(abs)
+  assertInsideWorkspace(root, target)
+  return abs
+}
+
+async function resolveWritableWorkspacePath(rel: string): Promise<string> {
+  const root = await realWorkspaceRoot()
+  const abs = resolveInWorkspace(rel)
+  let parent = dirname(abs)
+  while (parent !== root && parent.startsWith(root + sep)) {
+    try {
+      const realParent = await realpath(parent)
+      assertInsideWorkspace(root, realParent)
+      return abs
+    } catch {
+      parent = dirname(parent)
+    }
+  }
+  const realParent = await realpath(parent)
+  assertInsideWorkspace(root, parent)
+  assertInsideWorkspace(root, realParent)
   return abs
 }
 
@@ -130,7 +167,7 @@ export function registerCapabilityBricks(): void {
   ipcMain.handle('files:list', async (_e, rel: string) => {
     if (!(await ensurePermission('files'))) return { ok: false, error: 'File permission denied' }
     try {
-      const entries = await readdir(resolveInWorkspace(rel), { withFileTypes: true })
+      const entries = await readdir(await resolveExistingWorkspacePath(rel), { withFileTypes: true })
       return { ok: true, entries: entries.map((d) => ({ name: d.name, dir: d.isDirectory() })) }
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
@@ -140,7 +177,7 @@ export function registerCapabilityBricks(): void {
   ipcMain.handle('files:read', async (_e, rel: string) => {
     if (!(await ensurePermission('files'))) return { ok: false, error: 'File permission denied' }
     try {
-      return { ok: true, contents: await readFile(resolveInWorkspace(rel), 'utf-8') }
+      return { ok: true, contents: await readFile(await resolveExistingWorkspacePath(rel), 'utf-8') }
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
     }
@@ -149,7 +186,7 @@ export function registerCapabilityBricks(): void {
   ipcMain.handle('files:write', async (_e, rel: string, contents: string) => {
     if (!(await ensurePermission('files'))) return { ok: false, error: 'File permission denied' }
     try {
-      const abs = resolveInWorkspace(rel)
+      const abs = await resolveWritableWorkspacePath(rel)
       await mkdir(dirname(abs), { recursive: true })
       await writeFile(abs, contents ?? '', 'utf-8')
       return { ok: true }
@@ -161,7 +198,9 @@ export function registerCapabilityBricks(): void {
   ipcMain.handle('files:mkdir', async (_e, rel: string) => {
     if (!(await ensurePermission('files'))) return { ok: false, error: 'File permission denied' }
     try {
-      await mkdir(resolveInWorkspace(rel), { recursive: true })
+      const abs = resolveInWorkspace(rel)
+      await resolveWritableWorkspacePath(rel)
+      await mkdir(abs, { recursive: true })
       return { ok: true }
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
@@ -171,7 +210,7 @@ export function registerCapabilityBricks(): void {
   ipcMain.handle('files:remove', async (_e, rel: string) => {
     if (!(await ensurePermission('files'))) return { ok: false, error: 'File permission denied' }
     try {
-      await rm(resolveInWorkspace(rel), { recursive: true, force: true })
+      await rm(await resolveExistingWorkspacePath(rel), { recursive: true, force: true })
       return { ok: true }
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) }

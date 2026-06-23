@@ -185,7 +185,6 @@ function exposeSubscription(path: string[]): (cb: (payload: unknown) => void) =>
 }
 
 type SafeYApi = Window['y']
-type SafeKernelAuthApi = Pick<Window['yKernelAuth'], 'restore' | 'signIn' | 'clear'>
 
 ;(window as unknown as { y: Partial<SafeYApi> }).y = {
   userland: {
@@ -207,7 +206,7 @@ type SafeKernelAuthApi = Pick<Window['yKernelAuth'], 'restore' | 'signIn' | 'cle
     command: exposeCall(['engine', 'command']) as SafeYApi['engine']['command'],
     cancel: exposeCall(['engine', 'cancel']) as SafeYApi['engine']['cancel'],
     onEvent: exposeSubscription(['engine', 'onEvent']) as SafeYApi['engine']['onEvent']
-  },
+  } as Partial<SafeYApi['engine']> as SafeYApi['engine'],
   app: {
     getState: exposeCall(['app', 'getState']) as SafeYApi['app']['getState'],
     checkpoint: exposeCall(['app', 'checkpoint']) as SafeYApi['app']['checkpoint'],
@@ -228,6 +227,13 @@ type SafeKernelAuthApi = Pick<Window['yKernelAuth'], 'restore' | 'signIn' | 'cle
     removeProject: exposeCall(['app', 'removeProject']) as SafeYApi['app']['removeProject'],
     onStateChanged: exposeSubscription(['app', 'onStateChanged']) as SafeYApi['app']['onStateChanged']
   } as Partial<SafeYApi['app']> as SafeYApi['app'],
+  auth: {
+    load: exposeCall(['auth', 'load']) as SafeYApi['auth']['load'],
+    restore: exposeCall(['auth', 'restore']) as SafeYApi['auth']['restore'],
+    signIn: exposeCall(['auth', 'signIn']) as SafeYApi['auth']['signIn'],
+    clear: exposeCall(['auth', 'clear']) as SafeYApi['auth']['clear'],
+    onChanged: exposeSubscription(['auth', 'onChanged']) as SafeYApi['auth']['onChanged']
+  },
   feedback: {
     submit: exposeCall(['feedback', 'submit']) as SafeYApi['feedback']['submit']
   },
@@ -255,12 +261,6 @@ type SafeKernelAuthApi = Pick<Window['yKernelAuth'], 'restore' | 'signIn' | 'cle
     kill: exposeCall(['terminal', 'kill']) as SafeYApi['terminal']['kill'],
     onEvent: exposeSubscription(['terminal', 'onEvent']) as SafeYApi['terminal']['onEvent']
   }
-}
-
-;(window as unknown as { yKernelAuth: SafeKernelAuthApi }).yKernelAuth = {
-  restore: exposeCall(['kernelAuth', 'restore']) as SafeKernelAuthApi['restore'],
-  signIn: exposeCall(['kernelAuth', 'signIn']) as SafeKernelAuthApi['signIn'],
-  clear: exposeCall(['kernelAuth', 'clear']) as SafeKernelAuthApi['clear']
 }
 
 function buildComponent(code: string): React.ComponentType {

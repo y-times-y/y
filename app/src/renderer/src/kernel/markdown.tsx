@@ -145,16 +145,6 @@ function TextBlock({ text }: { text: string }): React.JSX.Element {
       continue
     }
 
-    if (trimmed.startsWith('<')) {
-      const htmlLines: string[] = []
-      while (i < lines.length && lines[i].trim()) {
-        htmlLines.push(lines[i])
-        i += 1
-      }
-      elements.push(<div key={`html${i}`} className="md-html" dangerouslySetInnerHTML={{ __html: htmlLines.join('\n') }} />)
-      continue
-    }
-
     if (trimmed.startsWith('> ')) {
       const quoteLines: string[] = []
       while (i < lines.length && lines[i].trim().startsWith('>')) {

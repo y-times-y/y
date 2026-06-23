@@ -3,9 +3,12 @@ import { createRoot } from 'react-dom/client'
 
 const params = new URLSearchParams(window.location.search)
 ;(window as Window & { __Y_PREVIEW__?: boolean }).__Y_PREVIEW__ = true
+window.localStorage.setItem('y.onboarding.done', 'true')
+window.localStorage.setItem('y.onboarding.cli.v2.done', 'true')
 const engineListeners: Array<(payload: EngineEventPayload) => void> = []
 const projectFileListeners: Array<(payload: { projectId: string; paths: string[] }) => void> = []
 const listedDirectories: string[] = []
+let previewClipboard = ''
 ;(window as Window & { __listedDirectories?: string[] }).__listedDirectories = listedDirectories
 ;(window as Window & { __emitProjectFilesChanged?: (projectId?: string, paths?: string[]) => void }).__emitProjectFilesChanged = (
   projectId = 'preview-ytimesy',
@@ -207,6 +210,7 @@ window.y = {
       ]
     }),
     start: async () => ({ ok: true, sessionId: 'preview' }),
+    startModify: async () => ({ ok: true, sessionId: 'preview' }),
     send: async () => ({ ok: true }),
     command: async (_sessionId, command) => ({
       ok: true,
@@ -390,6 +394,40 @@ window.y = {
     },
     onStateChanged: () => () => undefined
   },
+  auth: {
+    load: async () => ({
+      ok: true,
+      session: {
+        savedAt: new Date().toISOString(),
+        user: {
+          id: 'preview-user',
+          email: 'preview@ytimesy.com',
+          displayName: 'Preview User'
+        }
+      }
+    }),
+    restore: async () => ({
+      ok: true,
+      session: {
+        savedAt: new Date().toISOString(),
+        user: {
+          id: 'preview-user',
+          email: 'preview@ytimesy.com',
+          displayName: 'Preview User'
+        }
+      }
+    }),
+    signIn: async () => ({
+      ok: true,
+      user: {
+        id: 'preview-user',
+        email: 'preview@ytimesy.com',
+        displayName: 'Preview User'
+      }
+    }),
+    clear: async () => ({ ok: true }),
+    onChanged: () => () => undefined
+  },
   feedback: {
     submit: async () => ({ ok: true, stored: 'local' })
   },
@@ -399,7 +437,23 @@ window.y = {
     reportMissingBrick: async () => ({ ok: true })
   },
   clipboard: {
-    writeText: async () => ({ ok: true })
+    writeText: async (text) => {
+      previewClipboard = String(text)
+      try {
+        await navigator.clipboard.writeText(previewClipboard)
+      } catch {
+        Object.defineProperty(navigator, 'clipboard', {
+          configurable: true,
+          value: {
+            writeText: async (next: string) => {
+              previewClipboard = String(next)
+            },
+            readText: async () => previewClipboard
+          }
+        })
+      }
+      return { ok: true }
+    }
   },
   net: { request: async () => ({ ok: false, error: 'preview' }) },
   files: {

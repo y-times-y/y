@@ -9,6 +9,7 @@ const ENGINE_LOGO_FILES: Record<string, string> = {
 
 function logoFilePath(fileName: string): string | null {
   const candidates = [
+    join(process.resourcesPath, 'engines', fileName),
     join(app.getAppPath(), 'src/main/assets/engines', fileName),
     join(__dirname, 'assets/engines', fileName)
   ]

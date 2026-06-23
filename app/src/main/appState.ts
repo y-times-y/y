@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'path'
-import { cp, mkdir, readFile, readdir, rm, stat, unlink, writeFile } from 'fs/promises'
+import { cp, mkdir, readFile, readdir, realpath, rm, stat, unlink, writeFile } from 'fs/promises'
 import { watch, type FSWatcher } from 'fs'
 import { randomUUID } from 'crypto'
 import { execFile } from 'child_process'
@@ -17,6 +17,7 @@ type StoredMsg = {
   verb?: string
   target?: string
   body?: string
+  failed?: boolean
   streaming?: boolean
   system?: boolean
   engineId?: string
@@ -163,6 +164,7 @@ type MessageRow = {
   verb: string | null
   target: string | null
   body: string | null
+  failed: number | null
   streaming: number | null
   system: number | null
   engine_id: string | null
@@ -198,6 +200,7 @@ const projectWatchers = new Map<
   number,
   {
     projectId: string
+    root: string
     watcher: FSWatcher
     timer: ReturnType<typeof setTimeout> | null
     changedPaths: Set<string>
@@ -266,6 +269,7 @@ function sanitizeMessage(input: unknown): StoredMsg | null {
     verb: typeof value.verb === 'string' ? value.verb : undefined,
     target: typeof value.target === 'string' ? value.target : undefined,
     body: typeof value.body === 'string' ? value.body : undefined,
+    failed: typeof value.failed === 'boolean' ? value.failed : undefined,
     streaming: typeof value.streaming === 'boolean' ? value.streaming : undefined,
     system: typeof value.system === 'boolean' ? value.system : undefined,
     engineId: typeof value.engineId === 'string' ? value.engineId : undefined,
@@ -508,6 +512,7 @@ function runStateMigrations(db: SqliteDb): void {
       verb TEXT,
       target TEXT,
       body TEXT,
+      failed INTEGER,
       streaming INTEGER,
       system INTEGER,
       engine_id TEXT,
@@ -529,6 +534,7 @@ function runStateMigrations(db: SqliteDb): void {
     );
     CREATE INDEX IF NOT EXISTS state_events_created_at_idx ON state_events(created_at);
   `)
+
       db.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)').run(
         1,
         'initial-normalized-state',
@@ -539,6 +545,13 @@ function runStateMigrations(db: SqliteDb): void {
       db.exec('ROLLBACK')
       throw error
     }
+  }
+
+  const messageColumns = new Set(
+    (db.prepare('PRAGMA table_info(messages)').all() as Array<{ name: string }>).map((column) => column.name)
+  )
+  if (!messageColumns.has('failed')) {
+    db.exec('ALTER TABLE messages ADD COLUMN failed INTEGER')
   }
 
   db.exec(`
@@ -704,7 +717,7 @@ function readStateFromDb(db: SqliteDb): AppState {
     ORDER BY position ASC
   `)
   const messageStmt = db.prepare(`
-    SELECT role, text, name, msg_id, verb, target, body, streaming, system, engine_id,
+    SELECT role, text, name, msg_id, verb, target, body, failed, streaming, system, engine_id,
       terminal_id, terminal_running, checkpoint_id, duration_ms, interrupted
     FROM messages
     WHERE chat_id = ?
@@ -720,6 +733,7 @@ function readStateFromDb(db: SqliteDb): AppState {
         verb: message.verb ?? undefined,
         target: message.target ?? undefined,
         body: message.body ?? undefined,
+        failed: message.failed === null ? undefined : Boolean(message.failed),
         streaming: message.streaming === null ? undefined : Boolean(message.streaming),
         system: message.system === null ? undefined : Boolean(message.system),
         engineId: message.engine_id ?? undefined,
@@ -826,9 +840,9 @@ function writeStateToDb(
   const deleteChat = db.prepare('DELETE FROM chats WHERE id = ?')
   const insertMessage = db.prepare(`
     INSERT INTO messages (
-      chat_id, position, role, text, name, msg_id, verb, target, body, streaming, system,
+      chat_id, position, role, text, name, msg_id, verb, target, body, failed, streaming, system,
       engine_id, terminal_id, terminal_running, checkpoint_id, duration_ms, interrupted
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
 
   db.exec('BEGIN IMMEDIATE')
@@ -867,6 +881,7 @@ function writeStateToDb(
             message.verb ?? null,
             message.target ?? null,
             message.body ?? null,
+            typeof message.failed === 'boolean' ? (message.failed ? 1 : 0) : null,
             typeof message.streaming === 'boolean' ? (message.streaming ? 1 : 0) : null,
             typeof message.system === 'boolean' ? (message.system ? 1 : 0) : null,
             message.engineId ?? null,
@@ -1073,25 +1088,70 @@ async function findProjectFileBySuffix(root: string, suffix: string): Promise<st
   return matches.length === 1 ? matches[0] : undefined
 }
 
-async function resolveProjectFile(projectId: string | undefined, filePath: string): Promise<{ project?: StoredProject; path?: string; error?: string }> {
+async function nearestExistingParent(path: string, root: string): Promise<string> {
+  let parent = dirname(path)
+  while (parent !== root && isInside(root, parent)) {
+    try {
+      await realpath(parent)
+      return parent
+    } catch {
+      parent = dirname(parent)
+    }
+  }
+  return parent
+}
+
+async function resolveProjectWorkspace(
+  project: StoredProject,
+  workspaceRoot?: string
+): Promise<{ root?: string; error?: string }> {
+  const projectRoot = resolve(project.path)
+  const requestedRoot = workspaceRoot?.trim() ? resolve(workspaceRoot) : projectRoot
+  const realProjectRoot = await realpath(projectRoot).catch(() => projectRoot)
+  const realRequestedRoot = await realpath(requestedRoot).catch(() => requestedRoot)
+  if (isInside(realProjectRoot, realRequestedRoot)) return { root: requestedRoot }
+
+  const isolatedRoot = resolve(join(app.getPath('userData'), 'isolated-workspaces'))
+  const realIsolatedRoot = await realpath(isolatedRoot).catch(() => isolatedRoot)
+  if (isInside(realIsolatedRoot, realRequestedRoot)) return { root: requestedRoot }
+
+  return { error: 'That workspace is outside the selected project.' }
+}
+
+async function resolveProjectFile(
+  projectId: string | undefined,
+  filePath: string,
+  workspaceRoot?: string
+): Promise<{ project?: StoredProject; root?: string; path?: string; error?: string }> {
   const current = await loadState()
   const project =
     current.projects.find((p) => p.id === projectId) ??
     current.projects.find((p) => p.id === current.activeProjectId)
   if (!project) return { error: 'Open a project folder first.' }
-  const root = resolve(project.path)
+  const workspace = await resolveProjectWorkspace(project, workspaceRoot)
+  if (!workspace.root) return { project, error: workspace.error || 'Could not resolve workspace.' }
+  const root = workspace.root
+  const realRoot = await realpath(root).catch(() => root)
   const abs = isAbsolute(filePath) ? resolve(filePath) : resolve(root, normalizeProjectRelPath(filePath))
   if (!isInside(root, abs)) return { error: 'That file is outside the selected project.' }
   try {
-    await stat(abs)
-    return { project, path: abs }
+    const realAbs = await realpath(abs)
+    if (!isInside(realRoot, realAbs)) return { error: 'That file resolves outside the selected project.' }
+    return { project, root, path: abs }
   } catch {}
   const relCandidate = isAbsolute(filePath) && isInside(root, abs)
     ? relative(root, abs)
     : normalizeProjectRelPath(filePath)
   const suffixMatch = await findProjectFileBySuffix(root, relCandidate)
-  if (suffixMatch) return { project, path: suffixMatch }
-  return { project, path: abs }
+  if (suffixMatch) {
+    const realMatch = await realpath(suffixMatch).catch(() => suffixMatch)
+    if (!isInside(realRoot, realMatch)) return { error: 'That file resolves outside the selected project.' }
+    return { project, root, path: suffixMatch }
+  }
+  const parent = await nearestExistingParent(abs, root)
+  const realParent = await realpath(parent).catch(() => parent)
+  if (!isInside(realRoot, realParent)) return { error: 'That folder resolves outside the selected project.' }
+  return { project, root, path: abs }
 }
 
 async function searchProjectFiles(root: string, query: string, limit = 40): Promise<SelectedFile[]> {
@@ -1261,45 +1321,53 @@ export function registerAppStateBricks(): void {
     return { ok: true, files }
   })
 
-  ipcMain.handle('app:searchFiles', async (_e, projectId: string | undefined, query = '') => {
+  ipcMain.handle('app:searchFiles', async (_e, projectId: string | undefined, query = '', workspaceRoot?: string) => {
     const current = await loadState()
     const project = projectId
       ? current.projects.find((p) => p.id === projectId)
       : current.projects.find((p) => p.id === current.activeProjectId)
     if (!project) return { ok: false, files: [], error: 'Open a project folder first.' }
-    return { ok: true, files: await searchProjectFiles(project.path, query.trim().toLowerCase()) }
+    const workspace = await resolveProjectWorkspace(project, workspaceRoot)
+    if (!workspace.root) return { ok: false, files: [], error: workspace.error || 'Could not resolve workspace.' }
+    return { ok: true, files: await searchProjectFiles(workspace.root, query.trim().toLowerCase()) }
   })
 
-  ipcMain.handle('app:listDirectory', async (_e, projectId: string | undefined, directory = '') => {
+  ipcMain.handle('app:listDirectory', async (_e, projectId: string | undefined, directory = '', workspaceRoot?: string) => {
     const current = await loadState()
     const project = projectId
       ? current.projects.find((p) => p.id === projectId)
       : current.projects.find((p) => p.id === current.activeProjectId)
     if (!project) return { ok: false, entries: [], error: 'Open a project folder first.' }
     try {
-      return { ok: true, entries: await listProjectDirectory(project.path, directory) }
+      const workspace = await resolveProjectWorkspace(project, workspaceRoot)
+      if (!workspace.root) return { ok: false, entries: [], error: workspace.error || 'Could not resolve workspace.' }
+      return { ok: true, entries: await listProjectDirectory(workspace.root, directory) }
     } catch (err) {
       return { ok: false, entries: [], error: err instanceof Error ? err.message : 'Could not list folder.' }
     }
   })
 
-  ipcMain.handle('app:watchFiles', async (event, projectId?: string) => {
+  ipcMain.handle('app:watchFiles', async (event, projectId?: string, workspaceRoot?: string) => {
     const current = await loadState()
     const project = projectId
       ? current.projects.find((p) => p.id === projectId)
       : current.projects.find((p) => p.id === current.activeProjectId)
     if (!project) return { ok: false, error: 'Open a project folder first.' }
+    const workspace = await resolveProjectWorkspace(project, workspaceRoot)
+    if (!workspace.root) return { ok: false, error: workspace.error || 'Could not resolve workspace.' }
 
     stopProjectWatcher(event.sender.id)
     try {
       const entry: {
         projectId: string
+        root: string
         watcher: FSWatcher
         timer: ReturnType<typeof setTimeout> | null
         changedPaths: Set<string>
       } = {
         projectId: project.id,
-        watcher: watch(project.path, { recursive: true }, (_kind, filename) => {
+        root: workspace.root,
+        watcher: watch(workspace.root, { recursive: true }, (_kind, filename) => {
           if (ignoredProjectChange(filename)) return
           entry.changedPaths.add(filename ? String(filename).replace(/\\/g, '/') : '')
           if (entry.timer) clearTimeout(entry.timer)
@@ -1329,8 +1397,8 @@ export function registerAppStateBricks(): void {
     return { ok: true }
   })
 
-  ipcMain.handle('app:readProjectFile', async (_e, projectId: string | undefined, filePath: string): Promise<ProjectFileResult> => {
-    const resolved = await resolveProjectFile(projectId, filePath)
+  ipcMain.handle('app:readProjectFile', async (_e, projectId: string | undefined, filePath: string, workspaceRoot?: string): Promise<ProjectFileResult> => {
+    const resolved = await resolveProjectFile(projectId, filePath, workspaceRoot)
     if (!resolved.path) return { ok: false, error: resolved.error || 'Could not resolve file.' }
     try {
       const info = await stat(resolved.path)
@@ -1341,22 +1409,22 @@ export function registerAppStateBricks(): void {
       if (imageExts.includes(ext)) {
         const buf = await readFile(resolved.path)
         const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'gif' ? 'image/gif' : ext === 'webp' ? 'image/webp' : ext === 'ico' ? 'image/x-icon' : 'image/png'
-        return { ok: true, content: `data:${mime};base64,${buf.toString('base64')}`, path: resolved.path, relPath: relative(resolved.project!.path, resolved.path) }
+        return { ok: true, content: `data:${mime};base64,${buf.toString('base64')}`, path: resolved.path, relPath: relative(resolved.root!, resolved.path) }
       }
       if (info.size > 4 * 1024 * 1024) return { ok: false, error: 'This file is too large to edit here.' }
-      return { ok: true, content: await readFile(resolved.path, 'utf-8'), path: resolved.path, relPath: relative(resolved.project!.path, resolved.path) }
+      return { ok: true, content: await readFile(resolved.path, 'utf-8'), path: resolved.path, relPath: relative(resolved.root!, resolved.path) }
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : 'Could not read file.' }
     }
   })
 
-  ipcMain.handle('app:writeProjectFile', async (_e, projectId: string | undefined, filePath: string, content: string): Promise<ProjectFileResult> => {
-    const resolved = await resolveProjectFile(projectId, filePath)
+  ipcMain.handle('app:writeProjectFile', async (_e, projectId: string | undefined, filePath: string, content: string, workspaceRoot?: string): Promise<ProjectFileResult> => {
+    const resolved = await resolveProjectFile(projectId, filePath, workspaceRoot)
     if (!resolved.path) return { ok: false, error: resolved.error || 'Could not resolve file.' }
     try {
       await mkdir(dirname(resolved.path), { recursive: true })
       await writeFile(resolved.path, content, 'utf-8')
-      return { ok: true, content, path: resolved.path, relPath: relative(resolved.project!.path, resolved.path) }
+      return { ok: true, content, path: resolved.path, relPath: relative(resolved.root!, resolved.path) }
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : 'Could not write file.' }
     }

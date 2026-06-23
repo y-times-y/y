@@ -279,6 +279,7 @@ interface AppMsg {
   verb?: string
   target?: string
   body?: string
+  failed?: boolean
   streaming?: boolean
   system?: boolean
   engineId?: string
@@ -431,6 +432,7 @@ interface YApi {
     models: () => Promise<EngineModelCatalog[]>
     checkCliStatus: () => Promise<OnboardingCliCheckResult>
     start: (args: StartEngineArgs) => Promise<StartResult>
+    startModify: (args: { engine: string; model?: string; options?: EngineRunOptions }) => Promise<StartResult>
     send: (sessionId: string, prompt: string) => Promise<{ ok: boolean; error?: string }>
     command: (sessionId: string, command: EngineCommand) => Promise<EngineCommandResult>
     cancel: (sessionId: string) => Promise<{ ok: boolean }>
@@ -444,13 +446,13 @@ interface YApi {
     getIsolationStatus: (projectId?: string) => Promise<IsolationStatus>
     createChat: (projectId?: string, options?: CreateChatOptions) => Promise<AppStateResult>
     selectFiles: (projectId?: string) => Promise<SelectFilesResult>
-    searchFiles: (projectId: string | undefined, query: string) => Promise<{ ok: boolean; files: SelectedFile[]; error?: string }>
-    listDirectory: (projectId: string | undefined, directory?: string) => Promise<{ ok: boolean; entries: ProjectDirectoryEntry[]; error?: string }>
-    watchFiles: (projectId?: string) => Promise<{ ok: boolean; error?: string }>
+    searchFiles: (projectId: string | undefined, query: string, workspaceRoot?: string) => Promise<{ ok: boolean; files: SelectedFile[]; error?: string }>
+    listDirectory: (projectId: string | undefined, directory?: string, workspaceRoot?: string) => Promise<{ ok: boolean; entries: ProjectDirectoryEntry[]; error?: string }>
+    watchFiles: (projectId?: string, workspaceRoot?: string) => Promise<{ ok: boolean; error?: string }>
     unwatchFiles: (projectId?: string) => Promise<{ ok: boolean }>
     onFilesChanged: (cb: (payload: { projectId: string; paths: string[] }) => void) => () => void
-    readProjectFile: (projectId: string | undefined, filePath: string) => Promise<ProjectFileResult>
-    writeProjectFile: (projectId: string | undefined, filePath: string, content: string) => Promise<ProjectFileResult>
+    readProjectFile: (projectId: string | undefined, filePath: string, workspaceRoot?: string) => Promise<ProjectFileResult>
+    writeProjectFile: (projectId: string | undefined, filePath: string, content: string, workspaceRoot?: string) => Promise<ProjectFileResult>
     updateChat: (
       projectId: string,
       chatId: string,
@@ -467,6 +469,13 @@ interface YApi {
     ) => Promise<ModifyChatResult>
     setActiveModifyChat: (chatId: string) => Promise<ModifyChatResult>
     onStateChanged: (cb: (state: AppState) => void) => () => void
+  }
+  auth: {
+    load: () => Promise<{ ok: boolean; session?: KernelAuthSession | null; error?: string }>
+    restore: () => Promise<{ ok: boolean; session?: KernelAuthSession | null; error?: string }>
+    signIn: () => Promise<{ ok: boolean; user?: KernelAuthUser; error?: string }>
+    clear: () => Promise<{ ok: boolean; error?: string }>
+    onChanged: (cb: (session: KernelAuthSession | null) => void) => () => void
   }
   feedback: {
     submit: (payload: FeedbackPayload) => Promise<FeedbackResult>
@@ -499,11 +508,6 @@ interface YApi {
   }
 }
 
-interface KernelAuthTokens {
-  accessToken: string
-  refreshToken: string
-}
-
 interface KernelAuthConnectedAccount {
   provider: string
   providerAccountId: string
@@ -524,7 +528,6 @@ interface KernelAuthUser {
 }
 
 interface KernelAuthSession {
-  tokens: KernelAuthTokens
   user: KernelAuthUser
   savedAt: string
 }
@@ -533,7 +536,6 @@ interface KernelAuthBridge {
   load: () => Promise<{ ok: boolean; session?: KernelAuthSession | null; error?: string }>
   restore: () => Promise<{ ok: boolean; session?: KernelAuthSession | null; error?: string }>
   signIn: () => Promise<{ ok: boolean; user?: KernelAuthUser; error?: string }>
-  save: (payload: { tokens: KernelAuthTokens; user: KernelAuthUser }) => Promise<{ ok: boolean; user?: KernelAuthUser; error?: string }>
   clear: () => Promise<{ ok: boolean; error?: string }>
   openExternal: (url: string) => Promise<{ ok: boolean; error?: string }>
   onCallback: (cb: (url: string) => void) => () => void
@@ -771,6 +773,7 @@ declare global {
     verb?: string
     target?: string
     body?: string
+    failed?: boolean
     streaming?: boolean
     system?: boolean
     engineId?: string
@@ -891,6 +894,7 @@ declare global {
         verb?: string
         target?: string
         body?: string
+        failed?: boolean
       }
     | { kind: 'result'; ok: boolean; summary?: string }
     | { kind: 'error'; message: string }
