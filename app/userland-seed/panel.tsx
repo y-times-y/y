@@ -6020,7 +6020,7 @@ export default function Chat() {
               <div className="y-empty-inner">
                 <BinaryYMark key={activeChatId} />
                 <p className="y-empty-copy">
-                  {hasProject ? 'Ask anything about your code.' : 'Open a folder to start a real project chat.'}
+                  {hasProject ? 'Make something you want.' : 'Open a folder to start a real project chat.'}
                 </p>
               </div>
             </div>

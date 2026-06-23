@@ -10,7 +10,6 @@ type D1Database = {
 
 type Env = {
   DB: D1Database
-  HEXCLAVE_PROJECT_ID?: string
 }
 
 type JsonObject = Record<string, unknown>
@@ -127,17 +126,6 @@ const INGEST_RATE_LIMITS: Record<string, RateLimitRule[]> = {
     { name: 'brick-hour', windowSeconds: 3600, limit: 120 }
   ]
 }
-const DEFAULT_HEXCLAVE_PROJECT_ID = 'eeb236a6-5299-4457-8819-d15a1728ca38'
-const HEXCLAVE_HOSTED_HANDLER_SUFFIX = 'built-with-stack-auth.com'
-const DESKTOP_AUTH_CALLBACK_URL = 'y://auth-callback?source=hexclave'
-const DESKTOP_AUTH_DONE_HTML = `
-  <main data-y-desktop-auth-done="true" style="min-height:100vh;display:grid;place-items:center;background:#050505;color:#f4f4f5;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:24px">
-    <section style="width:min(440px,100%);text-align:center">
-      <h1 style="margin:0 0 10px;font-size:24px;line-height:1.2;font-weight:700;letter-spacing:0">You're signed in to y.</h1>
-      <p style="margin:0;color:rgba(255,255,255,0.58);font-size:14px;line-height:1.55">You can close this page and return to the desktop app.</p>
-    </section>
-  </main>`
-
 const JSON_HEADERS = {
   'content-type': 'application/json; charset=utf-8',
   'access-control-allow-origin': '*',
@@ -332,184 +320,6 @@ async function handleBrickRequest(request: Request, env: Env): Promise<Response>
   return json({ ok: true, id })
 }
 
-async function handleAuthHandler(request: Request, env: Env): Promise<Response> {
-  const url = new URL(request.url)
-  const projectId = cleanIdentifier(env.HEXCLAVE_PROJECT_ID, 160) || DEFAULT_HEXCLAVE_PROJECT_ID
-  const upstream = new URL(url.pathname + url.search, `https://${projectId}.${HEXCLAVE_HOSTED_HANDLER_SUFFIX}`)
-
-  const headers = new Headers(request.headers)
-  headers.set('host', upstream.host)
-
-  const response = await fetch(upstream, {
-    method: request.method,
-    headers,
-    body: request.method === 'GET' || request.method === 'HEAD' ? undefined : request.body,
-    redirect: 'manual'
-  })
-
-  const responseHeaders = new Headers(response.headers)
-  const location = responseHeaders.get('location')
-  if (location) {
-    try {
-      const next = new URL(location, upstream)
-      if (next.host === upstream.host) {
-        next.protocol = url.protocol
-        next.host = url.host
-        responseHeaders.set('location', next.toString())
-      }
-    } catch {
-      // Leave non-URL locations untouched.
-    }
-  }
-  responseHeaders.delete('content-security-policy')
-  responseHeaders.delete('content-security-policy-report-only')
-
-  const contentType = responseHeaders.get('content-type') || ''
-  if (url.pathname.startsWith('/handler/') && contentType.includes('text/html')) {
-    const source = await response.text()
-    const callbackScript = `
-<script>
-(() => {
-  if (!location.pathname.includes('/handler/cli-auth-confirm')) return;
-  let opened = false;
-  let successLocked = false;
-  let desktopDoneRendered = false;
-  const originalAuthUrl = location.href;
-  const originalPushState = history.pushState.bind(history);
-  const originalReplaceState = history.replaceState.bind(history);
-  function keepAuthUrl() {
-    if (location.href !== originalAuthUrl) originalReplaceState(null, '', originalAuthUrl);
-  }
-  history.pushState = function(state, title, nextUrl) {
-    if (successLocked && nextUrl) {
-      keepAuthUrl();
-      return;
-    }
-    return originalPushState(state, title, nextUrl);
-  };
-  history.replaceState = function(state, title, nextUrl) {
-    if (successLocked && nextUrl) {
-      keepAuthUrl();
-      return;
-    }
-    return originalReplaceState(state, title, nextUrl);
-  };
-  function renderDesktopDone() {
-    successLocked = true;
-    keepAuthUrl();
-    if (desktopDoneRendered || document.querySelector('[data-y-desktop-auth-done="true"]')) {
-      desktopDoneRendered = true;
-      return;
-    }
-    desktopDoneRendered = true;
-    document.body.innerHTML = ${JSON.stringify(DESKTOP_AUTH_DONE_HTML)};
-  }
-  function removeSecurityWarning() {
-    for (const el of Array.from(document.querySelectorAll('body *'))) {
-      const text = (el.innerText || '').trim();
-      const className = typeof el.className === 'string' ? el.className : '';
-      if (text === 'SECURITY WARNING' || (text === '' && className.includes('destructive'))) {
-        el.remove();
-      }
-    }
-  }
-  function maybeOpenY() {
-    const text = document.body && document.body.innerText ? document.body.innerText : '';
-    if (!successLocked && !/CLI Authorization Successful|CLI Continued Successfully|You're signed in to y|y desktop sign-in complete/i.test(text)) return;
-    renderDesktopDone();
-    if (!opened) {
-      opened = true;
-      setTimeout(() => { location.href = ${JSON.stringify(DESKTOP_AUTH_CALLBACK_URL)}; }, 250);
-    }
-  }
-  function removeSuccessButtons() {
-    const text = document.body && document.body.innerText ? document.body.innerText : '';
-    if (!/CLI Authorization Successful|CLI Continued Successfully|You're signed in to y|y desktop sign-in complete/i.test(text)) return;
-    for (const button of Array.from(document.querySelectorAll('button'))) button.remove();
-  }
-  const timer = setInterval(() => {
-    removeSecurityWarning();
-    removeSuccessButtons();
-    maybeOpenY();
-  }, 500);
-  new MutationObserver(() => {
-    removeSecurityWarning();
-    removeSuccessButtons();
-    maybeOpenY();
-  }).observe(document.documentElement, { childList: true, subtree: true });
-  document.addEventListener('DOMContentLoaded', () => {
-    removeSecurityWarning();
-    maybeOpenY();
-  });
-})();
-</script>`
-    responseHeaders.delete('content-length')
-    const patchedHtml = source
-      .replace('</body>', `${callbackScript}</body>`)
-    return new Response(patchedHtml, {
-      status: response.status,
-      statusText: response.statusText,
-      headers: responseHeaders
-    })
-  }
-
-  if (url.pathname.startsWith('/assets/') && contentType.includes('application/javascript')) {
-    const source = await response.text()
-    const patched = source
-      .replace(
-        /function Z9\(\)\{const t=window\.location\.hostname\.split\("\."\);return t\.length>=2\?t\[0\]:null\}/g,
-        `function Z9(){return${JSON.stringify(projectId)}}`
-      )
-      .replaceAll('Authorize CLI Application', 'Continue to y')
-      .replaceAll('Authorize y', 'Continue to y')
-      .replaceAll('Authorize', 'Continue')
-      .replaceAll('Authorizing...', 'Continuing...')
-      .replaceAll(',s.jsx(q,{variant:"destructive",children:t("")})', '')
-      .replaceAll('CLI Continued Successfully', "You're signed in to y.")
-      .replaceAll('CLI Authorization Successful', 'y desktop sign-in complete')
-      .replaceAll('The CLI application has been authorized successfully. You can close this window and return to the command line.', 'y desktop has been signed in. You can close this window and return to the app.')
-      .replaceAll('primaryAction:()=>t.redirectToHome(),primaryText:"Go home"', 'primaryAction:void 0,primaryText:void 0')
-      .replaceAll('primaryAction:()=>t.redirectToHome(),primaryText:"Go Home"', 'primaryAction:void 0,primaryText:void 0')
-      .replaceAll('primaryAction:()=>{try{window.close()}catch(e){}},primaryText:"Close this page"', 'primaryAction:void 0,primaryText:void 0')
-      .replaceAll('primaryText:"Go home"', 'primaryText:void 0')
-      .replaceAll('primaryText:"Go Home"', 'primaryText:void 0')
-      .replaceAll('primaryText:"Close this page"', 'primaryText:void 0')
-      .replaceAll('Invalid CLI Authorization Link', 'Invalid y desktop sign-in link')
-      .replaceAll('This CLI authorization link is missing a login code. Please return to the command line and start the login process again.', 'This y desktop sign-in link is missing a login code. Return to the y app and start sign-in again.')
-      .replaceAll('Completing Authorization...', 'Finishing y desktop sign-in...')
-      .replaceAll('Finishing up the CLI authorization...', 'Sending the approved session back to y desktop...')
-      .replaceAll(
-        'A command line application is requesting access to your account. Clicking authorize will grant a secure access token to the CLI.',
-        'Continue to finish signing in to the y desktop app.'
-      )
-      .replaceAll(
-        'A command line application is requesting access to your account. Click the button below to authorize it.',
-        'Continue to finish signing in to the y desktop app.'
-      )
-      .replaceAll(
-        'Make sure you trust the command line application, as it will gain access to your account. If you did not initiate this request, please close this page and ignore it.',
-        ''
-      )
-      .replaceAll(
-        'WARNING: Make sure you trust the command line application, as it will gain access to your account. If you did not initiate this request, you can close this page and ignore it. We will never send you this link via email or any other means.',
-        ''
-      )
-    responseHeaders.delete('content-length')
-    responseHeaders.set('cache-control', 'no-store, max-age=0')
-    return new Response(patched, {
-      status: response.status,
-      statusText: response.statusText,
-      headers: responseHeaders
-    })
-  }
-
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers: responseHeaders
-  })
-}
-
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url)
@@ -525,10 +335,6 @@ export default {
     if (request.method === 'GET' && url.pathname === '/api/health') {
       const db = await env.DB.prepare('SELECT 1 AS ok').first<{ ok: number }>()
       return json({ ok: db?.ok === 1 })
-    }
-
-    if (url.pathname.startsWith('/handler/') || url.pathname.startsWith('/assets/')) {
-      return handleAuthHandler(request, env)
     }
 
     if (request.method === 'POST' && url.pathname === '/api/feedback') {

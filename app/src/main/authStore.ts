@@ -51,20 +51,20 @@ class AuthRefreshError extends Error {
 
 const DEFAULT_HEXCLAVE_PROJECT_ID = 'eeb236a6-5299-4457-8819-d15a1728ca38'
 const DEFAULT_HEXCLAVE_API_URL = 'https://api.hexclave.com'
-const DEFAULT_Y_AUTH_HANDLER_URL = 'https://ytimesy.com/handler/cli-auth-confirm'
-const DEFAULT_Y_AUTH_SIGN_IN_URL = 'https://ytimesy.com/handler/sign-in'
+const HEXCLAVE_HOSTED_HANDLER_SUFFIX = 'built-with-stack-auth.com'
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 function hexclaveProjectId(): string {
-  return (
+  const configured =
     process.env.HEXCLAVE_PROJECT_ID ||
     process.env.VITE_HEXCLAVE_PROJECT_ID ||
     process.env.NEXT_PUBLIC_HEXCLAVE_PROJECT_ID ||
-    DEFAULT_HEXCLAVE_PROJECT_ID
-  )
+    ''
+  return UUID_RE.test(configured) ? configured : DEFAULT_HEXCLAVE_PROJECT_ID
 }
 
 function hexclaveApiUrl(): string {
@@ -85,28 +85,18 @@ function hexclavePublishableClientKey(): string {
   )
 }
 
+function hexclaveHostedHandlerUrl(pathname: string): URL {
+  return new URL(pathname, `https://${hexclaveProjectId()}.${HEXCLAVE_HOSTED_HANDLER_SUFFIX}`)
+}
+
 function cliAuthConfirmUrl(loginCode: string): URL {
-  const configured =
-    process.env.Y_AUTH_HANDLER_URL ||
-    process.env.VITE_Y_AUTH_HANDLER_URL ||
-    process.env.HEXCLAVE_CLI_AUTH_CONFIRM_URL ||
-    process.env.VITE_HEXCLAVE_CLI_AUTH_CONFIRM_URL ||
-    process.env.NEXT_PUBLIC_HEXCLAVE_CLI_AUTH_CONFIRM_URL ||
-    ''
-  const base = configured || DEFAULT_Y_AUTH_HANDLER_URL
-  const url = new URL(base)
+  const url = hexclaveHostedHandlerUrl('/handler/cli-auth-confirm')
   url.searchParams.set('login_code', loginCode)
   return url
 }
 
 function hostedSignInUrl(loginCode: string): string {
-  const configured =
-    process.env.Y_AUTH_SIGN_IN_URL ||
-    process.env.VITE_Y_AUTH_SIGN_IN_URL ||
-    process.env.HEXCLAVE_SIGN_IN_URL ||
-    process.env.VITE_HEXCLAVE_SIGN_IN_URL ||
-    ''
-  const url = new URL(configured || DEFAULT_Y_AUTH_SIGN_IN_URL)
+  const url = hexclaveHostedHandlerUrl('/handler/sign-in')
   url.searchParams.set('after_auth_return_to', cliAuthConfirmUrl(loginCode).toString())
   return url.toString()
 }

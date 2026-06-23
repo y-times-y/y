@@ -41,6 +41,8 @@ import {
 const AUTH_CALLBACK_PROTOCOL = 'y'
 const USERLAND_FRAME_PROTOCOL = 'y-userland'
 const RESET_LOCAL_DATA_ARG = '--reset-y-data'
+const DEFAULT_HEXCLAVE_PROJECT_ID = 'eeb236a6-5299-4457-8819-d15a1728ca38'
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
 
 app.commandLine.appendSwitch('force-dark-mode')
 nativeTheme.themeSource = 'dark'
@@ -515,11 +517,12 @@ app.whenReady().then(async () => {
   registerOnboardingBricks()
   registerUpdateBricks()
   ipcMain.handle('auth:config', () => {
-    const projectId =
+    const configuredProjectId =
       process.env.HEXCLAVE_PROJECT_ID ||
       process.env.VITE_HEXCLAVE_PROJECT_ID ||
       process.env.NEXT_PUBLIC_HEXCLAVE_PROJECT_ID ||
       ''
+    const projectId = UUID_RE.test(configuredProjectId) ? configuredProjectId : DEFAULT_HEXCLAVE_PROJECT_ID
     const publishableClientKey =
       process.env.HEXCLAVE_PUBLISHABLE_CLIENT_KEY ||
       process.env.VITE_HEXCLAVE_PUBLISHABLE_CLIENT_KEY ||
