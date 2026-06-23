@@ -4,6 +4,8 @@
    No glass, no blur, no gradients. True near-black ground, crisp white,
    hairline white-alpha borders. Re-skins every component via the base vars. */
 :root {
+  color-scheme: dark;
+
   --ev-c-black: #0a0a0b;
   --ev-c-black-soft: #121214;
   --ev-c-black-mute: #161619;
@@ -28,6 +30,7 @@ body,
 .kernel-shell,
 .kernel-body,
 .userland-slot {
+  color-scheme: dark;
   background: transparent;
 }
 
@@ -87,7 +90,7 @@ button::-moz-focus-inner {
   inset: 0;
   z-index: 9999;
   display: flex;
-  background: #ffffff;
+  background: #050505;
   color: rgba(255, 255, 255, 0.93);
 }
 
@@ -276,14 +279,14 @@ button::-moz-focus-inner {
   position: relative;
   flex: 1;
   overflow: hidden;
-  background: #ffffff;
+  background: #050505;
 }
 
 .y-bin-rain {
   position: absolute;
   inset: 0 0 0 12px;
   overflow: hidden;
-  color: rgba(10, 10, 15, 0.45);
+  color: rgba(255, 255, 255, 0.36);
   font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
   font-size: 13px;
   pointer-events: none;
@@ -313,7 +316,7 @@ button::-moz-focus-inner {
 @media (max-width: 760px) {
   .y-login {
     display: block;
-    background: #0b0f18;
+    background: #050505;
   }
 
   .y-login-left {

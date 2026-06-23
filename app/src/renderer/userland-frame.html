@@ -2,12 +2,23 @@
 <html>
   <head>
     <meta charset="UTF-8" />
+    <meta name="color-scheme" content="dark" />
     <meta
       http-equiv="Content-Security-Policy"
       content="default-src 'self' https: http: data: file:; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https: http: file:; font-src 'self' data: https:; media-src 'self' data: https: http:; frame-src *; child-src *; base-uri 'none'; form-action 'none'"
     />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>y</title>
+    <style>
+      html,
+      body,
+      #root {
+        margin: 0;
+        min-height: 100%;
+        color-scheme: dark;
+        background: transparent;
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>

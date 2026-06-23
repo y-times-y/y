@@ -4045,6 +4045,7 @@ export default function Chat() {
           --y-code-color: #e4e4e4;
           --y-code-bg: #111214;
           --y-font: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+          color-scheme: dark;
           display: flex;
           flex: 1;
           min-height: 0;

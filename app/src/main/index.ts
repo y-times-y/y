@@ -1,7 +1,19 @@
-import { app, shell, BrowserWindow, ipcMain, net, protocol } from 'electron'
+import {
+  app,
+  shell,
+  BrowserWindow,
+  ipcMain,
+  net,
+  protocol,
+  nativeTheme,
+  Menu,
+  dialog,
+  type MenuItemConstructorOptions,
+  type MessageBoxOptions
+} from 'electron'
 import { join } from 'path'
 import { pathToFileURL } from 'url'
-import { copyFile, mkdir, readFile, writeFile, stat } from 'fs/promises'
+import { copyFile, mkdir, readFile, writeFile, stat, rm } from 'fs/promises'
 import { watch } from 'node:fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
@@ -28,6 +40,13 @@ import {
 
 const AUTH_CALLBACK_PROTOCOL = 'y'
 const USERLAND_FRAME_PROTOCOL = 'y-userland'
+const RESET_LOCAL_DATA_ARG = '--reset-y-data'
+
+app.commandLine.appendSwitch('force-dark-mode')
+nativeTheme.themeSource = 'dark'
+nativeTheme.on('updated', () => {
+  if (nativeTheme.themeSource !== 'dark') nativeTheme.themeSource = 'dark'
+})
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -83,6 +102,83 @@ function registerUserlandFrameProtocol(): void {
     }
     return net.fetch(pathToFileURL(join(__dirname, '../renderer', asset)).toString())
   })
+}
+
+async function resetPersistedAppData(): Promise<void> {
+  killAllTerminals()
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.destroy()
+  }
+  await rm(app.getPath('userData'), { recursive: true, force: true })
+}
+
+async function resetLocalDataAndRelaunch(): Promise<void> {
+  const options: MessageBoxOptions = {
+    type: 'warning',
+    buttons: ['Cancel', 'Reset and Relaunch'],
+    defaultId: 0,
+    cancelId: 0,
+    message: 'Reset local y data?',
+    detail:
+      'This deletes local chats, folders, auth session, Modify history, Userland changes, permissions, analytics cache, and isolated workspaces stored on this Mac. It does not delete your project folders.'
+  }
+  const focusedWindow = BrowserWindow.getFocusedWindow()
+  const result = focusedWindow
+    ? await dialog.showMessageBox(focusedWindow, options)
+    : await dialog.showMessageBox(options)
+  if (result.response !== 1) return
+
+  try {
+    await resetPersistedAppData()
+    app.relaunch()
+    app.exit(0)
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err)
+    await dialog.showErrorBox('Could not reset local data', error)
+  }
+}
+
+function installAppMenu(): void {
+  const resetLocalDataItem: MenuItemConstructorOptions = {
+    label: 'Reset Local Data...',
+    click: () => void resetLocalDataAndRelaunch()
+  }
+
+  const template: MenuItemConstructorOptions[] =
+    process.platform === 'darwin'
+      ? [
+          {
+            label: app.name,
+            submenu: [
+              { role: 'about' },
+              { type: 'separator' },
+              resetLocalDataItem,
+              { type: 'separator' },
+              { role: 'services' },
+              { type: 'separator' },
+              { role: 'hide' },
+              { role: 'hideOthers' },
+              { role: 'unhide' },
+              { type: 'separator' },
+              { role: 'quit' }
+            ]
+          },
+          { role: 'editMenu' },
+          { role: 'viewMenu' },
+          { role: 'windowMenu' },
+          { role: 'help', submenu: [] }
+        ]
+      : [
+          {
+            label: 'File',
+            submenu: [resetLocalDataItem, { type: 'separator' }, { role: 'quit' }]
+          },
+          { role: 'editMenu' },
+          { role: 'viewMenu' },
+          { role: 'windowMenu' }
+        ]
+
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
@@ -266,6 +362,14 @@ function createWindow(): void {
 app.whenReady().then(async () => {
   // Set app user model id for windows
   electronApp.setAppUserModelId('com.y.app')
+  nativeTheme.themeSource = 'dark'
+  if (process.argv.includes(RESET_LOCAL_DATA_ARG)) {
+    await resetPersistedAppData()
+    app.relaunch({ args: process.argv.filter((arg) => arg !== RESET_LOCAL_DATA_ARG) })
+    app.exit(0)
+    return
+  }
+  installAppMenu()
   registerAuthProtocol()
   registerUserlandFrameProtocol()
 
