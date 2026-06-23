@@ -1,6 +1,11 @@
 node_modules
 dist
 out
+playwright-report
+test-results
+*.tsbuildinfo
 .DS_Store
 .eslintcache
 *.log*
+.env
+.env.local

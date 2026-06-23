@@ -348,12 +348,21 @@ class CodexSession implements Session {
   }
 
   cancel(): void {
-    if (this.appServerTurnRunning && this.threadId) {
+    if (this.appServerTurnRunning) {
       this.cancelled = true
-      void this.appServerRequest('turn/interrupt', { threadId: this.threadId }).catch((err) => {
-        this.cancelled = false
-        this.emit({ kind: 'error', message: `Failed to interrupt codex: ${err.message}` })
-      })
+      if (this.threadId && this.appServerActiveTurnId) {
+        void this.appServerRequest('turn/interrupt', {
+          threadId: this.threadId,
+          turnId: this.appServerActiveTurnId
+        }).catch((err) => {
+          this.cancelled = false
+          this.emit({ kind: 'error', message: `Failed to interrupt codex: ${err.message}` })
+        })
+      } else {
+        this.appServer?.kill('SIGTERM')
+        this.appServerTurnRunning = false
+        this.appServerActiveTurnId = null
+      }
       return
     }
     if (this.child) this.cancelled = true
@@ -402,19 +411,26 @@ class CodexSession implements Session {
         if (command.action === 'set') {
           const objective = command.value?.trim()
           if (!objective) return { ok: false, error: 'Goal text is required.' }
-          await this.appServerRequest('thread/goal/set', { threadId: this.threadId, objective })
-          return { ok: true, message: `Goal set: ${objective}`, value: objective }
+          if (objective.length > 4000) return { ok: false, error: 'Codex goals must be at most 4,000 characters. Put longer instructions in a file and point the goal at that file.' }
+          const result = await this.appServerRequest('thread/goal/set', { threadId: this.threadId, objective })
+          const goal = result?.goal
+          const savedObjective = typeof goal?.objective === 'string' ? goal.objective : objective
+          const status = typeof goal?.status === 'string' ? goal.status : 'active'
+          return { ok: true, message: `Codex goal ${status}: ${savedObjective}`, value: savedObjective, status }
         }
         if (command.action === 'clear') {
           await this.appServerRequest('thread/goal/clear', { threadId: this.threadId })
-          return { ok: true, message: 'Goal cleared.' }
+          return { ok: true, message: 'Codex goal cleared.', value: '', status: 'cleared' }
         }
         const result = await this.appServerRequest('thread/goal/get', { threadId: this.threadId })
-        const objective = result?.goal?.objective
+        const goal = result?.goal
+        const objective = goal?.objective
+        const status = typeof goal?.status === 'string' ? goal.status : undefined
         return {
           ok: true,
-          message: typeof objective === 'string' && objective ? `Current goal: ${objective}` : 'No goal is set.',
-          value: typeof objective === 'string' ? objective : undefined
+          message: typeof objective === 'string' && objective ? `Codex goal${status ? ` ${status}` : ''}: ${objective}` : 'No Codex goal is set.',
+          value: typeof objective === 'string' ? objective : '',
+          status
         }
       }
       if (command.name === 'inventory') {
@@ -464,10 +480,10 @@ class CodexSession implements Session {
         clientUserMessageId: randomUUID(),
         input: [{ type: 'text', text: prompt, text_elements: [] }],
         cwd: this.opts.cwd,
-        ...(this.opts.mode === 'native' ? {} : {
+        ...(this.shouldSendAppServerPolicy() ? {
           approvalPolicy: this.codexApprovalPolicy(),
           sandboxPolicy: this.appServerSandboxPolicy()
-        }),
+        } : {}),
         ...(this.opts.model ? { model: this.opts.model } : {}),
         ...(this.opts.effort ? { effort: this.opts.effort } : {})
       })
@@ -567,12 +583,16 @@ class CodexSession implements Session {
     return {
       ...(this.opts.model ? { model: this.opts.model } : {}),
       cwd: this.opts.cwd,
-      ...(this.opts.mode === 'native' ? {} : {
+      ...(this.shouldSendAppServerPolicy() ? {
         approvalPolicy: this.codexApprovalPolicy(),
         sandbox: this.codexSandboxMode()
-      }),
+      } : {}),
       ...(this.opts.options?.ephemeral ? { ephemeral: true } : {})
     }
+  }
+
+  private shouldSendAppServerPolicy(): boolean {
+    return this.opts.mode !== 'native' || Boolean(this.opts.options?.codexDangerouslyBypassApprovalsAndSandbox)
   }
 
   private codexApprovalPolicy(): 'untrusted' | 'on-failure' | 'on-request' | 'never' {
@@ -681,7 +701,6 @@ class CodexSession implements Session {
     }
     if (method === 'turn/started') {
       if (typeof params?.turn?.id === 'string') this.appServerActiveTurnId = params.turn.id
-      this.emit({ kind: 'status', status: 'codex turn started' })
       return
     }
     if (method === 'context/compacted') {
@@ -953,7 +972,6 @@ class CodexSession implements Session {
         }
         break
       case 'turn.started':
-        this.emit({ kind: 'status', status: 'reasoning' })
         break
       case 'item.completed':
         this.handleItem(obj.item)

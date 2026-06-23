@@ -26,6 +26,22 @@ export interface CheckpointResult {
   error?: string
 }
 
+export interface SnapshotEntry {
+  hash: string
+  shortHash: string
+  message: string
+  label: string
+  kind: 'original' | 'change' | 'snapshot'
+  timestamp: string
+  current?: boolean
+}
+
+export interface SnapshotHistoryResult {
+  ok: boolean
+  entries?: SnapshotEntry[]
+  error?: string
+}
+
 async function run(dir: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string> {
   const { stdout } = await execFileAsync('git', args, {
     cwd: dir,
@@ -39,10 +55,47 @@ async function rootFor(dir: string): Promise<string> {
   return resolve(await run(dir, ['rev-parse', '--show-toplevel']))
 }
 
+function isNotGitRepositoryError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err)
+  return /not a git repository/i.test(message)
+}
+
 async function metadata(dir: string): Promise<{ hash: string; count: number }> {
   const hash = (await run(dir, ['rev-parse', '--short', 'HEAD']).catch(() => '')) || ''
   const raw = await run(dir, ['rev-list', '--count', 'HEAD']).catch(() => '0')
   return { hash, count: Number(raw) || 0 }
+}
+
+function cleanSnapshotMessage(message?: string): string {
+  return (message || 'snapshot').replace(/\s+/g, ' ').trim().slice(0, 160) || 'snapshot'
+}
+
+function labelFromMessage(message: string): { label: string; kind: SnapshotEntry['kind'] } {
+  if (message === 'initial userland' || message === 'original app') return { label: 'Original app', kind: 'original' }
+  if (message.startsWith('after: ')) return { label: message.slice(7).trim() || 'Verified app change', kind: 'change' }
+  if (message.startsWith('snapshot ')) return { label: 'Saved app version', kind: 'snapshot' }
+  return { label: message || 'Saved app version', kind: 'snapshot' }
+}
+
+async function pinSnapshot(root: string, hash?: string): Promise<void> {
+  const commit = hash || await run(root, ['rev-parse', 'HEAD'])
+  if (!/^[0-9a-f]{40}$/i.test(commit)) return
+  await run(root, ['update-ref', `refs/y/snapshots/${commit}`, commit]).catch(() => {})
+}
+
+function parseHistoryLine(line: string, current: string): SnapshotEntry | null {
+  const [hash, shortHash, timestamp, message] = line.split('\x1f')
+  if (!hash) return null
+  const meta = labelFromMessage(message || '')
+  return {
+    hash,
+    shortHash,
+    message: message || 'snapshot',
+    label: meta.label,
+    kind: meta.kind,
+    timestamp: new Date((Number(timestamp) || 0) * 1000).toISOString(),
+    current: hash === current
+  }
 }
 
 async function withTemporaryIndex<T>(fn: (env: NodeJS.ProcessEnv) => Promise<T>): Promise<T> {
@@ -92,16 +145,18 @@ export async function ensureRepo(dir: string): Promise<void> {
     await run(dir, ['add', '-A'])
     await run(dir, [...IDENTITY, 'commit', '-m', 'initial userland'])
   }
+  await pinSnapshot(dir)
 }
 
-export async function snapshot(dir: string): Promise<SnapResult> {
+export async function snapshot(dir: string, message = 'snapshot'): Promise<SnapResult> {
   try {
     await ensureRepo(dir)
     const dirty = Boolean(await run(dir, ['status', '--porcelain=v1', '--untracked-files=all']))
     if (dirty) {
       await run(dir, ['add', '-A'])
-      await run(dir, [...IDENTITY, 'commit', '-m', `snapshot ${new Date().toISOString()}`])
+      await run(dir, [...IDENTITY, 'commit', '-m', cleanSnapshotMessage(message)])
     }
+    await pinSnapshot(dir)
     return { ok: true, ...(await metadata(dir)) }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
@@ -118,6 +173,44 @@ export async function revert(dir: string): Promise<SnapResult> {
       if (!parent) return { ok: false, error: 'No earlier snapshot to revert to.' }
       await run(dir, ['reset', '--hard', parent])
     }
+    return { ok: true, ...(await metadata(dir)) }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+export async function history(dir: string, limit = 40): Promise<SnapshotHistoryResult> {
+  try {
+    await ensureRepo(dir)
+    const format = '%H%x1f%h%x1f%ct%x1f%s'
+    const out = await run(dir, ['log', `--max-count=${limit}`, `--format=${format}`])
+    const refFormat = '%(objectname)\x1f%(objectname:short)\x1f%(committerdate:unix)\x1f%(contents:subject)'
+    const pinnedOut = await run(dir, ['for-each-ref', `--format=${refFormat}`, 'refs/y/snapshots']).catch(() => '')
+    const current = await run(dir, ['rev-parse', 'HEAD'])
+    await pinSnapshot(dir, current)
+    const byHash = new Map<string, SnapshotEntry>()
+    for (const line of `${out}\n${pinnedOut}`.split('\n').filter(Boolean)) {
+      const entry = parseHistoryLine(line, current)
+      if (entry) byHash.set(entry.hash, entry)
+    }
+    const entries = Array.from(byHash.values())
+      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+      .slice(0, limit)
+    return { ok: true, entries }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+export async function restoreSnapshot(dir: string, hash: string): Promise<SnapResult> {
+  try {
+    await ensureRepo(dir)
+    if (!/^[0-9a-f]{7,40}$/i.test(hash)) throw new Error('Invalid snapshot id.')
+    const current = await run(dir, ['rev-parse', 'HEAD']).catch(() => '')
+    if (current) await pinSnapshot(dir, current)
+    const target = await run(dir, ['rev-parse', '--verify', `${hash}^{commit}`])
+    await pinSnapshot(dir, target)
+    await run(dir, ['reset', '--hard', target])
     return { ok: true, ...(await metadata(dir)) }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
@@ -145,6 +238,7 @@ export async function captureCheckpoint(dir: string): Promise<CheckpointResult> 
     })
     return { ok: true, checkpointId: id }
   } catch (err) {
+    if (isNotGitRepositoryError(err)) return { ok: true }
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
 }

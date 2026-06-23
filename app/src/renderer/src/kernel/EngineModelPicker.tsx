@@ -35,7 +35,7 @@ export function EngineMark({
         borderRadius: 4
       }}
     >
-      {engine === 'codex' ? 'O' : 'A'}
+      {engine === 'codex' ? 'O' : 'C'}
     </span>
   )
 }
@@ -49,6 +49,10 @@ type EngineModelPickerProps = {
   testId?: string
   className?: string
   menuAlign?: 'left' | 'right'
+}
+
+function modelDisplayLabel(engineId: string, modelId: string, label: string): string {
+  return engineId === 'claude-code' && modelId.includes('[1m]') ? `${label} 1M` : label
 }
 
 export function EngineModelPicker({
@@ -67,7 +71,7 @@ export function EngineModelPicker({
   const engineEntry = catalog.find((c) => c.engine === engineId)
   const modelEntry = engineEntry?.models.find((m) => m.id === modelId)
   const engineLabel = engineEntry?.label ?? engineId
-  const modelLabel = modelEntry?.label ?? modelId
+  const modelLabel = modelEntry ? modelDisplayLabel(engineId, modelEntry.id, modelEntry.label) : modelId
 
   React.useEffect(() => {
     if (!open) return
@@ -128,7 +132,7 @@ export function EngineModelPicker({
                       setOpen(false)
                     }}
                   >
-                    {model.label}
+                    {modelDisplayLabel(entry.engine, model.id, model.label)}
                   </button>
                 )
               })}

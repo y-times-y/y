@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ClipboardEvent, type CSSProperties, type DragEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useRef, useState, type ClipboardEvent, type CSSProperties, type DragEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import XtermTerminal from '@renderer/kernel/XtermTerminal'
 import {
   CHAT_SURFACE_CLASSES,
@@ -71,6 +71,16 @@ const PREVIEW =
 type Msg = AppMsg
 type Project = AppProject
 
+function getErrorMessage(error: unknown): string {
+  if (error && typeof error === 'object') {
+    const maybeHuman = Reflect.get(error, 'humanReadableMessage')
+    if (typeof maybeHuman === 'string' && maybeHuman.trim()) return maybeHuman
+    const maybeMessage = Reflect.get(error, 'message')
+    if (typeof maybeMessage === 'string' && maybeMessage.trim()) return maybeMessage
+  }
+  return error instanceof Error ? error.message : String(error)
+}
+
 type QueuedFollowUp = {
   id: string
   text: string
@@ -131,6 +141,25 @@ type OnboardingCliCheckResult = {
   tools: OnboardingCliToolStatus[]
 }
 
+type KernelAuthUser = {
+  id: string
+  email?: string
+  displayName?: string
+  profileImageUrl?: string
+  connectedAccounts?: KernelAuthConnectedAccount[]
+}
+
+type KernelAuthConnectedAccount = {
+  provider: string
+  providerAccountId: string
+  profile?: {
+    username?: string
+    displayName?: string
+    avatarUrl?: string
+    profileUrl?: string
+  }
+}
+
 type FileTreeNode =
   | { kind: 'file'; file: SelectedFile; name: string; depth: number }
   | { kind: 'folder'; folderPath: string; name: string; depth: number }
@@ -147,16 +176,18 @@ const MAX_PASTED_ATTACHMENTS = 3
 const MAX_PASTED_ATTACHMENT_BYTES = 120 * 1024
 const MAX_TOTAL_PASTED_ATTACHMENT_BYTES = 240 * 1024
 const COMPOSER_MAX_HEIGHT = 164
+const CHAT_LIST_COLLAPSED_LIMIT = 5
 const ONBOARDING_DONE_KEY = 'y.onboarding.done'
-const ANALYTICS_ENABLED_KEY = 'y.analytics.enabled'
-
-function analyticsEnabled(): boolean {
-  return storedBoolean(ANALYTICS_ENABLED_KEY, true)
-}
 
 function trackEvent(name: string, props?: Record<string, unknown>): void {
-  if (PREVIEW || !analyticsEnabled() || !window.y.analytics) return
-  void window.y.analytics.track(name, props)
+  const analytics = (window.y as Window['y'] & { analytics?: { track: (name: string, props?: Record<string, unknown>) => Promise<unknown> } }).analytics
+  if (PREVIEW || !analytics) return
+  void analytics.track(name, props)
+}
+
+function isNoisyRuntimeStatus(value: string): boolean {
+  const normalized = value.trim().toLowerCase()
+  return !normalized || normalized === '...' || normalized === 'requesting' || normalized === 'requesting...' || normalized === 'reasoning' || normalized === 'codex turn started'
 }
 
 function BinaryYMark() {
@@ -203,11 +234,17 @@ const BINARY_SPINNER_ROUTES = [
 const BINARY_SPINNER_ROUTE_LENGTH = BINARY_SPINNER_ROUTES[0].length
 const BINARY_SPINNER_RESET_STEPS = 4
 const BINARY_SPINNER_CYCLE_LENGTH = BINARY_SPINNER_ROUTE_LENGTH + BINARY_SPINNER_RESET_STEPS
+const BINARY_SPINNER_TOTAL_STEPS = BINARY_SPINNER_ROUTES.length * BINARY_SPINNER_CYCLE_LENGTH
+const BINARY_SPINNER_STEP_MS = 125
+
+function currentBinarySpinnerTick(): number {
+  return Math.floor(Date.now() / BINARY_SPINNER_STEP_MS) % BINARY_SPINNER_TOTAL_STEPS
+}
 
 function BinarySpinner() {
-  const [tick, setTick] = useState(0)
+  const [tick, setTick] = useState(currentBinarySpinnerTick)
   useEffect(() => {
-    const id = window.setInterval(() => setTick((value) => (value + 1) % (BINARY_SPINNER_ROUTES.length * BINARY_SPINNER_CYCLE_LENGTH)), 125)
+    const id = window.setInterval(() => setTick(currentBinarySpinnerTick()), BINARY_SPINNER_STEP_MS)
     return () => window.clearInterval(id)
   }, [])
   const phase = tick % BINARY_SPINNER_CYCLE_LENGTH
@@ -891,21 +928,168 @@ function splitVisibleStreamText(buffer: StreamBuffer, force = false): { visible:
   return { visible: buffer.text.slice(0, boundary), rest: buffer.text.slice(boundary) }
 }
 
-function FileDiffPreview({ diff }: { diff: string }) {
-  const lines = diff.split(/\r?\n/u).filter((line) => line.trim() !== '')
+type FullDiffRow = {
+  kind: 'context' | 'add' | 'del'
+  text: string
+  lineNo: string
+}
+
+type DiffPart = {
+  kind: 'context' | 'add' | 'del'
+  text: string
+}
+
+function parseDiffChanges(diff: string): Array<{ parts: DiffPart[] }> {
+  const changes: Array<{ parts: DiffPart[] }> = []
+  let current: { parts: DiffPart[] } | null = null
+  const flush = () => {
+    if (!current || !current.parts.some((part) => part.kind !== 'context')) return
+    changes.push(current)
+    current = null
+  }
+  for (const raw of diff.split(/\r?\n/u)) {
+    if (!raw || raw.startsWith('@@') || raw.startsWith('***') || raw.startsWith('---') || raw.startsWith('+++')) {
+      flush()
+      continue
+    }
+    const added = raw.startsWith('+')
+    const removed = raw.startsWith('-')
+    const context = raw.startsWith('  ')
+    if (!added && !removed && !context) {
+      flush()
+      continue
+    }
+    current ??= { parts: [] }
+    const text = raw.startsWith('+ ') || raw.startsWith('- ') || raw.startsWith('  ') ? raw.slice(2) : raw.slice(1)
+    current.parts.push({ kind: added ? 'add' : removed ? 'del' : 'context', text })
+  }
+  flush()
+  return changes
+}
+
+function findLineSequence(lines: string[], sequence: string[], start: number): number {
+  const meaningful = sequence.filter((line) => line.trim())
+  if (!meaningful.length) return -1
+  for (let index = start; index <= lines.length - sequence.length; index += 1) {
+    let exact = true
+    for (let offset = 0; offset < sequence.length; offset += 1) {
+      if (lines[index + offset] !== sequence[offset]) {
+        exact = false
+        break
+      }
+    }
+    if (exact) return index
+  }
+  for (let index = start; index <= lines.length - sequence.length; index += 1) {
+    let loose = true
+    for (let offset = 0; offset < sequence.length; offset += 1) {
+      if (lines[index + offset].trim() !== sequence[offset].trim()) {
+        loose = false
+        break
+      }
+    }
+    if (loose) return index
+  }
+  for (const needle of meaningful) {
+    const exact = lines.findIndex((line, index) => index >= start && line === needle)
+    if (exact !== -1) return exact
+  }
+  for (const needle of meaningful) {
+    const trimmed = needle.trim()
+    if (trimmed.length < 3) continue
+    const loose = lines.findIndex((line, index) => index >= start && line.trim() === trimmed)
+    if (loose !== -1) return loose
+  }
+  for (const needle of meaningful) {
+    const compact = needle.trim()
+    if (compact.length < 8) continue
+    const contains = lines.findIndex((line, index) => index >= start && line.includes(compact))
+    if (contains !== -1) return contains
+  }
+  return -1
+}
+
+function fullFileDiffRows(content: string, diff: string): FullDiffRow[] {
+  const lines = content.split(/\r?\n/u)
+  const states = lines.map(() => 'context' as FullDiffRow['kind'])
+  const inserts = new Map<number, FullDiffRow[]>()
+  let cursor = 0
+  for (const change of parseDiffChanges(diff)) {
+    const anchor = change.parts.filter((part) => part.kind !== 'del').map((part) => part.text)
+    const index = findLineSequence(lines, anchor, cursor)
+    if (index === -1) {
+      const hasOnlyDeletions = change.parts.some((part) => part.kind === 'del') && !anchor.some((line) => line.trim())
+      const fallback = hasOnlyDeletions ? lines.length : Math.min(Math.max(cursor, 0), lines.length)
+      const rows = change.parts
+        .filter((part) => part.kind !== 'context')
+        .map((part) => ({ kind: part.kind === 'add' ? 'add' : 'del', text: part.text, lineNo: '' }) as FullDiffRow)
+      if (rows.length) inserts.set(fallback, (inserts.get(fallback) ?? []).concat(rows))
+      continue
+    }
+    let lineIndex = index
+    for (const part of change.parts) {
+      if (part.kind === 'del') {
+        const row = { kind: 'del', text: part.text, lineNo: '' } as FullDiffRow
+        inserts.set(lineIndex, (inserts.get(lineIndex) ?? []).concat(row))
+        continue
+      }
+      if (part.kind === 'add') states[lineIndex] = 'add'
+      lineIndex += 1
+    }
+    cursor = Math.max(lineIndex, index + 1)
+  }
+  const rows: FullDiffRow[] = []
+  for (let index = 0; index < lines.length; index += 1) {
+    rows.push(...(inserts.get(index) ?? []))
+    rows.push({ kind: states[index], text: lines[index] || ' ', lineNo: String(index + 1) })
+  }
+  rows.push(...(inserts.get(lines.length) ?? []))
+  return rows
+}
+
+function fullFileSnapshotDiffRows(oldContent: string, content: string): FullDiffRow[] {
+  const oldLines = oldContent.split(/\r?\n/u)
+  const newLines = content.split(/\r?\n/u)
+  const dp = Array.from({ length: oldLines.length + 1 }, () => Array<number>(newLines.length + 1).fill(0))
+  for (let oldIndex = oldLines.length - 1; oldIndex >= 0; oldIndex -= 1) {
+    for (let newIndex = newLines.length - 1; newIndex >= 0; newIndex -= 1) {
+      dp[oldIndex][newIndex] =
+        oldLines[oldIndex] === newLines[newIndex]
+          ? dp[oldIndex + 1][newIndex + 1] + 1
+          : Math.max(dp[oldIndex + 1][newIndex], dp[oldIndex][newIndex + 1])
+    }
+  }
+  const rows: FullDiffRow[] = []
+  let oldIndex = 0
+  let newIndex = 0
+  while (oldIndex < oldLines.length || newIndex < newLines.length) {
+    if (oldIndex < oldLines.length && newIndex < newLines.length && oldLines[oldIndex] === newLines[newIndex]) {
+      rows.push({ kind: 'context', text: newLines[newIndex] || ' ', lineNo: String(newIndex + 1) })
+      oldIndex += 1
+      newIndex += 1
+    } else if (newIndex < newLines.length && (oldIndex >= oldLines.length || dp[oldIndex][newIndex + 1] >= dp[oldIndex + 1][newIndex])) {
+      rows.push({ kind: 'add', text: newLines[newIndex] || ' ', lineNo: String(newIndex + 1) })
+      newIndex += 1
+    } else if (oldIndex < oldLines.length) {
+      rows.push({ kind: 'del', text: oldLines[oldIndex] || ' ', lineNo: '' })
+      oldIndex += 1
+    }
+  }
+  return rows
+}
+
+function FileDiffPreview({ diff, fileName, content, oldContent }: { diff: string; fileName: string; content: string; oldContent?: string }) {
+  const rows = oldContent ? fullFileSnapshotDiffRows(oldContent, content) : fullFileDiffRows(content, diff)
+  const lang = codeFileLang(fileName)
   return (
-    <pre className="y-file-diff-pre" aria-label="File diff">
-      {lines.map((line, index) => {
-        const added = line.startsWith('+') && !line.startsWith('+++')
-        const removed = line.startsWith('-') && !line.startsWith('---')
-        const meta = line.startsWith('@@') || line.startsWith('***') || line.startsWith('---') || line.startsWith('+++')
-        const marker = added ? '+' : removed ? '-' : meta ? '·' : ' '
-        const text = added || removed ? line.slice(1) : line
+    <pre className="y-file-diff-pre" aria-label="File with edited diff">
+      {rows.map((row, index) => {
+        const marker = row.kind === 'add' ? '+' : row.kind === 'del' ? '-' : ' '
         return (
-          <span key={`${index}-${line}`} className={`tool-diff-line${added ? ' tool-diff-add' : removed ? ' tool-diff-del' : ''}`}>
-            <span className="tool-diff-ln">{meta ? '' : index + 1}</span>
+          <span key={`${index}-${row.kind}-${row.text}`} className={`tool-diff-line${row.kind === 'add' ? ' tool-diff-add' : row.kind === 'del' ? ' tool-diff-del' : ''}`}>
+            <span className="tool-diff-ln">{row.lineNo}</span>
             <span className="tool-diff-gutter">{marker}</span>
-            <code>{text || ' '}</code>
+            <code dangerouslySetInnerHTML={{ __html: hljsHighlight(row.text || ' ', lang) }} />
           </span>
         )
       })}
@@ -973,6 +1157,14 @@ function Icon({ name, size = 16 }: { name: string; size?: number }) {
         />
       </svg>
     )
+  if (name === 'help')
+    return (
+      <svg style={s} viewBox="0 0 20 20" fill="none" aria-hidden>
+        <circle cx="10" cy="10" r="7.25" stroke="currentColor" strokeWidth={sw} />
+        <path d="M7.9 7.75a2.25 2.25 0 0 1 4.35.82c0 1.8-2.2 1.9-2.2 3.45" stroke="currentColor" strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M10 15h.01" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" />
+      </svg>
+    )
   if (name === 'menu')
     return (
       <svg style={s} viewBox="0 0 20 20" fill="none" aria-hidden>
@@ -1028,6 +1220,15 @@ function Icon({ name, size = 16 }: { name: string; size?: number }) {
 	        <path d="M6 8l2.2 2L6 12M10 12h4" stroke="currentColor" strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" />
 	      </svg>
 	    )
+  if (name === 'branch')
+    return (
+      <svg style={s} viewBox="0 0 20 20" fill="none" aria-hidden>
+        <circle cx="6" cy="5.5" r="2" stroke="currentColor" strokeWidth={sw} />
+        <circle cx="14" cy="14.5" r="2" stroke="currentColor" strokeWidth={sw} />
+        <path d="M6 7.5v2.2a4.8 4.8 0 004.8 4.8H12" stroke="currentColor" strokeWidth={sw} strokeLinecap="round" />
+        <path d="M6 7.5v7" stroke="currentColor" strokeWidth={sw} strokeLinecap="round" />
+      </svg>
+    )
   if (name === 'send')
     return (
       <svg style={s} viewBox="0 0 20 20" fill="none" aria-hidden>
@@ -1078,6 +1279,14 @@ function Icon({ name, size = 16 }: { name: string; size?: number }) {
     return (
       <svg style={s} viewBox="0 0 20 20" fill="none" aria-hidden>
         <path d="M6 8l4 4 4-4" stroke="currentColor" strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    )
+  if (name === 'more')
+    return (
+      <svg style={s} viewBox="0 0 20 20" fill="none" aria-hidden>
+        <circle cx="5" cy="10" r="1.2" fill="currentColor" />
+        <circle cx="10" cy="10" r="1.2" fill="currentColor" />
+        <circle cx="15" cy="10" r="1.2" fill="currentColor" />
       </svg>
     )
   if (name === 'edit')
@@ -1253,33 +1462,103 @@ function SettingsToggle({ checked, onChange }: { checked: boolean; onChange: (ch
 }
 
 function SettingsView({
+  accountUser,
+  accountBusy,
+  accountChecking,
   soundEnabled,
   onSoundEnabled,
   engines,
   catalog,
   cliStatus,
+  onAccountSignIn,
+  onAccountSignOut,
   onResetOriginalApp,
   onOpenPlugins,
   onOpenMcp,
   onAuthStatus,
   onDoctor
 }: {
+  accountUser: KernelAuthUser | null
+  accountBusy: boolean
+  accountChecking: boolean
   soundEnabled: boolean
   onSoundEnabled: (enabled: boolean) => void
   engines: string[]
   catalog: EngineModelCatalog[]
   cliStatus: OnboardingCliCheckResult | null
+  onAccountSignIn: () => void
+  onAccountSignOut: () => void
   onResetOriginalApp: () => void
   onOpenPlugins: (engineId: string) => void
   onOpenMcp: (engineId: string) => void
   onAuthStatus: (engineId: string) => void
   onDoctor: (engineId: string) => void
 }) {
+  const accountName = accountUser?.displayName || accountUser?.email || 'Signed in'
+  const accountInitial = (accountUser?.displayName || accountUser?.email || 'y').trim().slice(0, 1).toUpperCase()
+  const signedOutLabel = accountChecking ? 'Checking account...' : 'Not signed in'
+  const signedOutHelp = accountChecking ? 'Checking your local y session.' : 'Sign in to sync identity, feedback, and product analytics.'
+  const connectedAccounts = accountUser?.connectedAccounts || []
   return (
     <div className="y-settings-view" data-testid="settings-view">
       <div className="y-settings-content">
+        <section className="y-settings-section">
+          <h2>Account</h2>
+          <div className="y-settings-card y-account-card">
+            <div className="y-account-main">
+              <div className="y-account-avatar" aria-hidden="true">
+                {accountUser?.profileImageUrl ? <img src={accountUser.profileImageUrl} alt="" /> : <span>{accountInitial}</span>}
+              </div>
+              <div>
+                <strong>{accountUser ? accountName : signedOutLabel}</strong>
+                <p>{accountUser?.email || (accountUser ? 'y account' : signedOutHelp)}</p>
+              </div>
+            </div>
+            {accountUser ? (
+              <button type="button" className="y-settings-action" onClick={onAccountSignOut} disabled={accountBusy}>Sign out</button>
+            ) : (
+              <button type="button" className="y-settings-action" onClick={onAccountSignIn} disabled={accountBusy || accountChecking}>{accountChecking ? 'Checking...' : accountBusy ? 'Opening...' : 'Sign in'}</button>
+            )}
+          </div>
+          {accountUser ? (
+            <div className="y-settings-card y-connected-card">
+              <div>
+                <strong>Connected profiles</strong>
+                <p>{connectedAccounts.length ? 'Accounts Hexclave has linked to this y user.' : 'No connected OAuth profiles returned yet.'}</p>
+              </div>
+              {connectedAccounts.length ? (
+                <div className="y-connected-list">
+                  {connectedAccounts.map((account) => {
+                    const profile = account.profile
+                    const provider = account.provider || 'unknown'
+                    const label = provider === 'github' ? 'GitHub' : provider === 'google' ? 'Google' : provider
+                    const name =
+                      profile?.username ||
+                      profile?.displayName ||
+                      (provider === 'google' ? accountUser.email || 'Connected' : 'Connected')
+                    const detail =
+                      profile?.profileUrl ||
+                      (provider === 'google' ? 'Google sign-in connected' : `Provider account ${account.providerAccountId}`)
+                    return (
+                      <div className="y-connected-item" key={`${provider}:${account.providerAccountId}`}>
+                        <div className="y-connected-avatar" aria-hidden="true">
+                          {profile?.avatarUrl ? <img src={profile.avatarUrl} alt="" /> : <span>{label.slice(0, 1).toUpperCase()}</span>}
+                        </div>
+                        <div>
+                          <strong>{label}</strong>
+                          <p>{name}</p>
+                          <span>{detail}</span>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </section>
         <section className="y-settings-section"><h2>General</h2><div className="y-settings-card"><div><strong>Completion sound</strong><p>Play a subtle sound when a long-running agent turn finishes.</p></div><SettingsToggle checked={soundEnabled} onChange={onSoundEnabled} /></div></section>
-        <section className="y-settings-section"><h2>Agents</h2><p className="y-settings-lead">y auto-detects each CLI's install and sign-in state on the system &mdash; no separate y account needed.</p><div className="y-agent-grid">{engines.map((engine) => { const entry = catalog.find((item) => item.engine === engine); const label = entry?.label || LABELS[engine] || engine; const tool = cliStatus?.tools.find((t) => t.id === engine); const statusText = !tool ? 'Detecting...' : !tool.installed ? 'Not installed' : tool.authenticated ? 'Signed in' : 'Installed, not signed in'; return <div className="y-agent-card" key={engine}><div className="y-agent-title"><EngineMark id={engine} logoUrl={entry?.logoUrl} size={18} /><strong>{label}</strong></div><span>{statusText}</span><div className="y-settings-actions"><button type="button" className="y-settings-action" onClick={() => onAuthStatus(engine)}>Auth status</button><button type="button" className="y-settings-action" onClick={() => onDoctor(engine)}>Doctor</button></div></div> })}</div></section>
+        <section className="y-settings-section"><h2>Agents</h2><p className="y-settings-lead">y auto-detects each local CLI's install and sign-in state on the system.</p><div className="y-agent-grid">{engines.map((engine) => { const entry = catalog.find((item) => item.engine === engine); const label = entry?.label || LABELS[engine] || engine; const tool = cliStatus?.tools.find((t) => t.id === engine); const statusText = !tool ? 'Detecting...' : !tool.installed ? 'Not installed' : tool.authenticated ? 'Signed in' : 'Installed, not signed in'; return <div className="y-agent-card" key={engine}><div className="y-agent-title"><EngineMark id={engine} logoUrl={entry?.logoUrl} size={18} /><strong>{label}</strong></div><span>{statusText}</span><div className="y-settings-actions"><button type="button" className="y-settings-action" onClick={() => onAuthStatus(engine)}>Auth status</button><button type="button" className="y-settings-action" onClick={() => onDoctor(engine)}>Doctor</button></div></div> })}</div></section>
         <section className="y-settings-section"><h2>MCP & Plugins</h2><p className="y-settings-lead">Open each engine's native plugin and MCP views. y displays the real CLI output in the terminal.</p><div className="y-agent-grid">{engines.map((engine) => { const entry = catalog.find((item) => item.engine === engine); const label = entry?.label || LABELS[engine] || engine; return <div className="y-agent-card" key={engine}><div className="y-agent-title"><EngineMark id={engine} logoUrl={entry?.logoUrl} size={18} /><strong>{label}</strong></div><p>Inspect native integrations for this engine.</p><div className="y-settings-actions"><button type="button" className="y-settings-action" onClick={() => onOpenPlugins(engine)}>Plugins</button><button type="button" className="y-settings-action" onClick={() => onOpenMcp(engine)}>MCP</button></div></div> })}</div></section>
         <section className="y-settings-section"><h2>Modify Chat</h2><div className="y-settings-card"><div><strong>Reset to original app</strong><p>Restore the bundled y chat interface and replace the current customized Userland app.</p></div><button type="button" className="y-settings-action danger" onClick={onResetOriginalApp}>Reset</button></div></section>
       </div>
@@ -1308,7 +1587,7 @@ function OnboardingView({
   async function runCliCheck(): Promise<void> {
     setChecking(true)
     try {
-      const result = await window.y.onboarding.checkCli()
+      const result = await window.y.engine.checkCliStatus()
       setCliResult(result)
     } finally {
       setChecking(false)
@@ -1316,7 +1595,12 @@ function OnboardingView({
   }
 
   async function copyCommand(command: string, label: string): Promise<void> {
-    await navigator.clipboard.writeText(command)
+    if (window.y?.clipboard?.writeText) {
+      const result = await window.y.clipboard.writeText(command)
+      if (!result.ok) throw new Error(result.error || 'Could not copy command')
+    } else {
+      await navigator.clipboard.writeText(command)
+    }
     setCopied(label)
     window.setTimeout(() => setCopied(''), 1400)
     trackEvent('onboarding_install_command_copied', { label })
@@ -1418,11 +1702,20 @@ export default function Chat() {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [searchOpen, setSearchOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [feedbackOpen, setFeedbackOpen] = useState(false)
+  const [feedbackMessage, setFeedbackMessage] = useState('')
+  const [feedbackSending, setFeedbackSending] = useState(false)
+  const [accountUser, setAccountUser] = useState<KernelAuthUser | null>(null)
+  const [accountBusy, setAccountBusy] = useState(false)
+  const [accountChecking, setAccountChecking] = useState(false)
   const [onboardingDone, setOnboardingDone] = useState(() => window.localStorage.getItem(ONBOARDING_DONE_KEY) === 'true')
   const [cliStatus, setCliStatus] = useState<OnboardingCliCheckResult | null>(null)
   const [soundEnabled, setSoundEnabled] = useState(() => storedBoolean('y.settings.sound', true))
   const [searchQuery, setSearchQuery] = useState('')
   const [toast, setToast] = useState('')
+  const [isolationChoice, setIsolationChoice] = useState<{ projectId: string; projectName: string } | null>(null)
+  const [openProjectMenuId, setOpenProjectMenuId] = useState<string | null>(null)
+  const [expandedChatProjects, setExpandedChatProjects] = useState<Record<string, boolean>>({})
   const [projects, setProjects] = useState<Project[]>([])
   const [activeProjectId, setActiveProjectId] = useState<string | undefined>(undefined)
   const [activeChatId, setActiveChatId] = useState<string | undefined>(undefined)
@@ -1452,6 +1745,7 @@ export default function Chat() {
   const [savedFileContent, setSavedFileContent] = useState('')
   const [fileMode, setFileMode] = useState<FileMode>('preview')
   const [activeFileDiff, setActiveFileDiff] = useState('')
+  const [activeFileOldContent, setActiveFileOldContent] = useState('')
   const [fileStatus, setFileStatus] = useState('')
   const [engineCommands, setEngineCommands] = useState<Array<{ name: string; source?: string }>>([])
   const [composerTerminal, setComposerTerminal] = useState<ComposerTerminal | null>(null)
@@ -1510,8 +1804,28 @@ export default function Chat() {
 
   useEffect(() => {
     if (PREVIEW) return
-    void window.y.onboarding.checkCli().then(setCliStatus)
+    void window.y.engine.checkCliStatus().then(setCliStatus)
   }, [])
+
+  useEffect(() => {
+    if (PREVIEW || !settingsOpen) return
+    let cancelled = false
+    async function refreshAccount(): Promise<void> {
+      setAccountChecking(true)
+      try {
+        const restored = await window.yKernelAuth.restore()
+        if (cancelled) return
+        if (restored.ok && restored.session) setAccountUser(restored.session.user)
+        else setAccountUser(null)
+      } finally {
+        if (!cancelled) setAccountChecking(false)
+      }
+    }
+    void refreshAccount()
+    return () => {
+      cancelled = true
+    }
+  }, [settingsOpen])
 
   useEffect(() => {
     if (engineId === 'codex' || composerMode !== 'goal') return
@@ -1689,6 +2003,12 @@ export default function Chat() {
     return chat?.runOptions || defaultRunOptions()
   }
 
+  function isIsolatedChat(chat: AppChat, project: Project): boolean {
+    const cwd = chat.runOptions?.workingDirectory?.trim()
+    if (!cwd) return false
+    return cwd.replace(/\/+$/u, '') !== project.path.replace(/\/+$/u, '')
+  }
+
   function mergeCommandSuggestions(
     base: Array<{ name: string; source?: string; detail?: string }>,
     discovered: Array<{ name: string; source?: string }>
@@ -1850,6 +2170,7 @@ export default function Chat() {
     if (activeRef.current.chatId === chatId) {
       messagesRef.current = nextMessages
       setMessages(nextMessages)
+      requestLogScrollToBottom(chatId)
     }
   }
 
@@ -1865,6 +2186,7 @@ export default function Chat() {
     if (activeRef.current.chatId === chatId) {
       messagesRef.current = nextMessages
       setMessages(nextMessages)
+      requestLogScrollToBottom(chatId)
     }
   }
 
@@ -1887,7 +2209,11 @@ export default function Chat() {
 	  ): Promise<string | null> {
 	    const resolved =
 	      model ?? catalog.find(function (c) { return c.engine === id })?.defaultModel ?? modelId
-	    const nextOptions = projectPath ? { ...options, workingDirectory: projectPath } : options
+	    const nextOptions = options.workingDirectory?.trim()
+	      ? options
+	      : projectPath
+	        ? { ...options, workingDirectory: projectPath }
+	        : options
 	    setEngineCommands([])
 	    persistChatMeta(chatId, { engineId: id, modelId: resolved, runOptions: nextOptions })
     if (PREVIEW) {
@@ -2332,6 +2658,17 @@ export default function Chat() {
     return getChatById(chatId).chat?.messages ?? []
   }
 
+  function requestLogScrollToBottom(chatId?: string) {
+    if (chatId && activeRef.current.chatId !== chatId) return
+    stickToBottomRef.current = true
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const log = logRef.current
+        if (log && stickToBottomRef.current) log.scrollTop = log.scrollHeight
+      })
+    })
+  }
+
   async function restartChatSession(chatId: string): Promise<string | null> {
     const { project, chat } = getChatById(chatId)
     if (!chat) return null
@@ -2369,10 +2706,6 @@ export default function Chat() {
       trackEvent('chat_goal_started', { chatId, projectId: project?.id, engineId: targetEngine, promptLength: trimmed.length, status: goalResult.status })
     }
     const checkpoint = await window.y.app.checkpoint(project?.id)
-    if (!checkpoint.ok || !checkpoint.checkpointId) {
-      addSystemNote(checkpoint.error || 'Native Git checkpoint failed. Install Git and open a Git repository.')
-      return false
-    }
     const history = getMessagesForChat(chatId)
     const firstUserMessage = !history.some((message) => message.role === 'user')
     if (firstUserMessage && activeRef.current.chatId === chatId && title === 'New chat') setTitle(chatTitleFromText(trimmed))
@@ -2398,6 +2731,11 @@ export default function Chat() {
       pastedAttachmentCount: pasted.length,
       hasGoal: goalBacked || Boolean(targetEngine === 'codex' && (activeRef.current.chatId === chatId ? goal : chat?.goal ?? '')),
       firstUserMessage
+    })
+    trackEvent('user_active', {
+      surface: 'main',
+      engineId: runtime?.engineId || engineId,
+      hasGoal: goalBacked || Boolean(targetEngine === 'codex' && (activeRef.current.chatId === chatId ? goal : chat?.goal ?? ''))
     })
     armCompletionSound()
     setDoneChats((prev) => {
@@ -2448,11 +2786,6 @@ export default function Chat() {
     deliveringSteerRef.current.add(chatId)
     const { project } = getChatById(chatId)
     const checkpoint = await window.y.app.checkpoint(project?.id)
-    if (!checkpoint.ok || !checkpoint.checkpointId) {
-      deliveringSteerRef.current.delete(chatId)
-      addSystemNote(checkpoint.error || 'Could not checkpoint before steering.')
-      return
-    }
     const res = await window.y.engine.command(session, { name: 'steer', value: buildSteeringText(item.text) })
     deliveringSteerRef.current.delete(chatId)
     if (!res.ok) {
@@ -2487,7 +2820,12 @@ export default function Chat() {
 
   function copyMessage(text: string) {
     if (!text) return
-    void navigator.clipboard.writeText(text).then(
+    const write = window.y?.clipboard?.writeText
+      ? window.y.clipboard.writeText(text).then(function (result) {
+          if (!result.ok) throw new Error(result.error || 'Could not copy message')
+        })
+      : navigator.clipboard.writeText(text)
+    void write.then(
       function () { showToast('Copied message') },
       function () { showToast('Could not copy message') }
     )
@@ -2885,7 +3223,7 @@ export default function Chat() {
       const chatId = sessionToChatRef.current[sid]
       if (!chatId) return
       if (e.kind === 'status') {
-        setRuntime(chatId, { status: e.status })
+        setRuntime(chatId, { status: isNoisyRuntimeStatus(e.status) ? '' : e.status })
       } else if (e.kind === 'text') {
         flushThinkingBuffer(chatId)
         setRuntime(chatId, { status: '' })
@@ -2968,7 +3306,7 @@ export default function Chat() {
         flushThinkingBuffer(chatId)
         seenToolEventsRef.current = {}
         setRuntime(chatId, { busy: false, startedAt: undefined, status: '', error: e.message, goalBacked: false })
-        trackEvent('chat_turn_error', { chatId, message: e.message })
+        trackEvent('chat_turn_error', { engineId: runtime?.engineId || engineId })
         updateChatMessages(chatId, (m) => sealAssistantStreaming(settleTools(sealAllThinking(m))))
       }
     })
@@ -3068,7 +3406,9 @@ export default function Chat() {
     const log = logRef.current
     if (!log || !stickToBottomRef.current || animatedFinalScrollRef.current) return
     const frame = requestAnimationFrame(() => {
-      if (stickToBottomRef.current) log.scrollTop = log.scrollHeight
+      requestAnimationFrame(() => {
+        if (stickToBottomRef.current) log.scrollTop = log.scrollHeight
+      })
     })
     return () => cancelAnimationFrame(frame)
   }, [messages, status])
@@ -3112,6 +3452,7 @@ export default function Chat() {
     if (!chatId) return
     setError('')
     setComposerInput('')
+    requestLogScrollToBottom(chatId)
     if (goalBacked) setComposerMode('chat')
     const files = attachments
     setAttachments([])
@@ -3158,6 +3499,80 @@ export default function Chat() {
   function showToast(msg: string) {
     setToast(msg)
     setTimeout(function () { setToast('') }, 2200)
+  }
+
+  async function signInFromSettings() {
+    if (accountBusy) return
+    setAccountBusy(true)
+    trackEvent('settings_sign_in_started')
+    try {
+      const res = await window.yKernelAuth.signIn()
+      if (!res.ok) {
+        trackEvent('settings_sign_in_failed')
+        showToast(res.error || 'Could not sign in.')
+        return
+      }
+      setAccountUser(res.user ?? null)
+      trackEvent('settings_sign_in_completed')
+      showToast('Signed in.')
+      window.location.reload()
+    } catch (err) {
+      trackEvent('settings_sign_in_failed')
+      showToast(getErrorMessage(err) || 'Could not sign in.')
+    } finally {
+      setAccountBusy(false)
+    }
+  }
+
+  async function signOutFromSettings() {
+    if (accountBusy) return
+    setAccountBusy(true)
+    try {
+      const res = await window.yKernelAuth.clear()
+      if (!res.ok) {
+        trackEvent('settings_sign_out_failed')
+        showToast(res.error || 'Could not sign out.')
+        return
+      }
+      setAccountUser(null)
+      trackEvent('settings_sign_out_completed')
+      trackEvent('auth_signed_out', { source: 'settings' })
+      window.location.reload()
+    } catch {
+      setAccountBusy(false)
+      trackEvent('settings_sign_out_failed')
+      showToast('Could not sign out.')
+    }
+  }
+
+  async function submitFeedback() {
+    const message = feedbackMessage.trim()
+    if (!message || feedbackSending) return
+    setFeedbackSending(true)
+    try {
+      const res = await window.y.feedback.submit({
+        message,
+        category: 'in-app',
+        context: {
+          activeProjectId,
+          activeChatId,
+          settingsOpen,
+          onboardingDone
+        }
+      })
+      if (!res.ok) {
+        showToast(res.error || 'Could not send feedback.')
+        return
+      }
+      trackEvent('feedback_dialog_sent', { stored: res.stored })
+      setFeedbackMessage('')
+      setFeedbackOpen(false)
+      showToast(res.stored === 'remote' ? 'Feedback sent.' : 'Feedback saved locally.')
+    } catch {
+      showToast('Could not send feedback.')
+    } finally {
+      setFeedbackSending(false)
+    }
   }
 
   function handleNav(id: string) {
@@ -3305,18 +3720,56 @@ export default function Chat() {
     }
   }
 
+  async function resolveFileCandidate(file: SelectedFile): Promise<SelectedFile> {
+    const project = findActiveProject(projectsRef.current, activeProjectId)
+    if (!project) return file
+    const rawPath = (file.path || file.relPath || file.name).replace(/\\/g, '/')
+    const projectRoot = project.path.replace(/\\/g, '/').replace(/\/$/u, '')
+    const relFromRoot = rawPath.startsWith(`${projectRoot}/`) ? rawPath.slice(projectRoot.length + 1) : rawPath.replace(/^\.?\//u, '')
+    const wanted = [file.relPath, relFromRoot, rawPath, file.name]
+      .filter((value): value is string => Boolean(value))
+      .map((value) => value.replace(/\\/g, '/').replace(/^\.?\//u, ''))
+    const query = file.name || rawPath.split('/').filter(Boolean).pop() || ''
+    if (!query) return file
+    const result = await window.y.app.searchFiles(project.id, query)
+    if (!result.ok || !result.files.length) return file
+    const exact = result.files.find((candidate) => {
+      const rel = (candidate.relPath || candidate.path).replace(/\\/g, '/')
+      return wanted.some((value) => rel === value || rel.endsWith(`/${value}`) || candidate.path.replace(/\\/g, '/') === value)
+    })
+    const sameName = result.files.find((candidate) => candidate.name === file.name)
+    return exact || sameName || file
+  }
+
   async function openFile(file: SelectedFile) {
     setSettingsOpen(false)
     setActiveFile(file)
     setActiveFileDiff('')
+    setActiveFileOldContent('')
     setFileRailOpen(true)
     setFileStatus('Opening...')
-    const res = await window.y.app.readProjectFile(activeProjectId, file.path)
+    let currentFile = file
+    let res = await window.y.app.readProjectFile(activeProjectId, currentFile.path || currentFile.relPath || currentFile.name)
+    if (!res.ok) {
+      const candidate = await resolveFileCandidate(file)
+      if (candidate.path !== file.path || candidate.relPath !== file.relPath) {
+        currentFile = candidate
+        res = await window.y.app.readProjectFile(activeProjectId, candidate.path || candidate.relPath || candidate.name)
+      }
+    }
     if (!res.ok) {
       setFileContent('')
       setSavedFileContent('')
       setFileStatus(res.error || 'Could not open file.')
       return
+    }
+    if (res.path) {
+      const normalizedPath = res.path.replace(/\\/g, '/')
+      const normalizedRel = res.relPath?.replace(/\\/g, '/')
+      const normalizedName = (normalizedRel || normalizedPath).split('/').filter(Boolean).pop() || currentFile.name
+      setActiveFile({ ...currentFile, name: normalizedName, path: normalizedPath, relPath: normalizedRel || currentFile.relPath })
+    } else if (currentFile !== file) {
+      setActiveFile(currentFile)
     }
     const content = res.content ?? ''
     setFileContent(content)
@@ -3325,17 +3778,18 @@ export default function Chat() {
     setFileStatus('')
   }
 
-  async function openEditedFileTarget(target: string, diff: string) {
+  async function openEditedFileTarget(target: string, diff: string, oldContent?: string) {
     const project = findActiveProject(projects, activeProjectId)
     if (!project) {
       setToast('Open a project folder first.')
       return
     }
     const normalized = target.replace(/\\/g, '/')
-    const path = normalized.startsWith('/') ? normalized : `${project.path.replace(/\/$/u, '')}/${normalized.replace(/^\.?\//u, '')}`
+    const path = normalized.startsWith('/') ? normalized : normalized.replace(/^\.?\//u, '')
     const name = normalized.split('/').filter(Boolean).pop() || 'file'
-    await openFile({ name, path, relPath: normalized.startsWith('/') ? undefined : normalized })
+    await openFile({ name, path, relPath: normalized.startsWith('/') ? undefined : path })
     setActiveFileDiff(diff)
+    setActiveFileOldContent(oldContent || '')
     setFileMode(diff ? 'diff' : 'preview')
     trackEvent('chat_file_diff_opened', { projectId: project.id, hasDiff: Boolean(diff), fileExtension: name.split('.').pop() || '' })
   }
@@ -3381,6 +3835,9 @@ export default function Chat() {
       setFileStatus(res.error || 'Could not save file.')
       return
     }
+    if (res.path) {
+      setActiveFile((file) => file ? { ...file, path: res.path!, relPath: res.relPath || file.relPath } : file)
+    }
     setSavedFileContent(fileContent)
     setFileStatus('Saved')
     const relPath = (activeFile.relPath || activeFile.name).replace(/\\/g, '/')
@@ -3394,6 +3851,7 @@ export default function Chat() {
     setFileContent('')
     setSavedFileContent('')
     setActiveFileDiff('')
+    setActiveFileOldContent('')
     setFileStatus('')
   }
 
@@ -3401,6 +3859,7 @@ export default function Chat() {
     const project = projects.find((p) => p.id === projectId)
     const chat = project?.chats.find((c) => c.id === chatId)
     if (!project || !chat || chat.archived) return
+    setOpenProjectMenuId(null)
     setSettingsOpen(false)
     closeFileView()
     applyActiveChat(project, chat)
@@ -3455,14 +3914,34 @@ export default function Chat() {
     await newChat()
   }
 
-  async function newChat() {
-    setSettingsOpen(false)
-    const project = findActiveProject(projects, activeProjectId)
-    if (!project) {
-      showToast('Open a folder first.')
+  async function removeProject(projectId: string) {
+    const project = projects.find((p) => p.id === projectId)
+    if (!project) return
+    setOpenProjectMenuId(null)
+    setExpandedChatProjects((expanded) => {
+      const next = { ...expanded }
+      delete next[projectId]
+      return next
+    })
+    setRenamingChat((draft) => (draft?.projectId === projectId ? null : draft))
+    for (const chat of project.chats) {
+      const session = runtimesRef.current[chat.id]?.sessionId
+      if (session && !PREVIEW) void window.y.engine.cancel(session)
+      if (session) delete sessionToChatRef.current[session]
+      delete runtimesRef.current[chat.id]
+    }
+    if (activeProjectId === projectId) closeFileView()
+    const res = await window.y.app.removeProject(projectId)
+    if (!res.ok || !res.state) {
+      showToast(res.error || 'Could not remove folder.')
       return
     }
-    const res = await window.y.app.createChat(project.id)
+    applyState(res.state)
+    showToast('Folder removed from y.')
+  }
+
+  async function createChatInProject(projectId: string, isolate = false) {
+    const res = await window.y.app.createChat(projectId, { isolate })
     if (!res.ok || !res.state) {
       showToast(res.error || 'Could not create chat.')
       return
@@ -3473,12 +3952,62 @@ export default function Chat() {
     start(chatEngine(nextChat), chatModel(nextChat, chatEngine(nextChat)), chatOptions(nextChat), nextProject?.path, nextChat?.id)
   }
 
+  async function newChat(projectId = activeProjectId) {
+    setSettingsOpen(false)
+    setOpenProjectMenuId(null)
+    const project = projects.find((p) => p.id === projectId) ?? findActiveProject(projects, activeProjectId)
+    if (!project) {
+      showToast('Open a folder first.')
+      return
+    }
+
+    if (project.chats.length > 0) {
+      const status = await window.y.app.getIsolationStatus(project.id)
+      if (!status.ok) {
+        showToast(status.error || 'Could not check workspace isolation.')
+        return
+      }
+      if (status.canIsolate) {
+        setIsolationChoice({ projectId: project.id, projectName: project.name })
+        return
+      }
+    }
+
+    await createChatInProject(project.id, false)
+  }
+
+  async function chooseIsolation(isolate: boolean) {
+    const choice = isolationChoice
+    setIsolationChoice(null)
+    if (!choice) return
+    await createChatInProject(choice.projectId, isolate)
+  }
+
+  function cancelIsolationChoice() {
+    setIsolationChoice(null)
+  }
+
+  function onIsolationKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (event.key !== 'Escape') return
+    event.stopPropagation()
+    cancelIsolationChoice()
+  }
+
+  async function newChatFromProject(projectId: string) {
+    await newChat(projectId)
+  }
+
   function toggleProject(projectId: string) {
     const project = projects.find((p) => p.id === projectId)
     if (!project) return
+    setOpenProjectMenuId(null)
     const nextOpen = !project.open
     setProjects((list) => list.map((p) => (p.id === projectId ? { ...p, open: nextOpen } : p)))
     if (!PREVIEW) void window.y.app.setProjectOpen(projectId, nextOpen)
+  }
+
+  function toggleChatList(projectId: string) {
+    setExpandedChatProjects((expanded) => ({ ...expanded, [projectId]: !expanded[projectId] }))
   }
 
   const empty = messages.length === 0 && !error
@@ -3676,7 +4205,7 @@ export default function Chat() {
           font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
           color: var(--y-text-3); padding: 0 10px 10px;
         }
-        .y-project { margin-bottom: 10px; }
+        .y-project { margin-bottom: 10px; position: relative; }
         .y-empty-projects {
           display: flex; align-items: center; gap: 8px; width: 100%;
           padding: 8px 10px; border: 1px dashed rgba(255,255,255,0.12);
@@ -3690,21 +4219,66 @@ export default function Chat() {
           color: var(--y-text); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; text-align: left;
         }
         .y-project-head:hover { background: rgba(255,255,255,0.04); }
+        .y-project-new-chat {
+          width: 22px; height: 22px; flex: 0 0 22px; margin-left: auto; border-radius: 7px;
+          background: transparent; color: var(--y-text-3); display: flex; align-items: center; justify-content: center;
+          cursor: pointer; opacity: 0; transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
+        }
+        .y-project-head:hover .y-project-new-chat, .y-project-new-chat:focus-visible {
+          opacity: 1;
+        }
+        .y-project-new-chat:hover, .y-project-new-chat:focus-visible {
+          background: rgba(255,255,255,0.055); color: var(--y-text);
+        }
+        .y-project-more {
+          width: 22px; height: 22px; flex: 0 0 22px; margin-left: auto; border-radius: 7px;
+          background: transparent; color: var(--y-text-3); display: flex; align-items: center; justify-content: center;
+          cursor: pointer; opacity: 0; transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
+        }
+        .y-project-head:hover .y-project-more, .y-project-more:focus-visible, .y-project-more.is-open {
+          opacity: 1;
+        }
+        .y-project-more:hover, .y-project-more:focus-visible, .y-project-more.is-open {
+          background: rgba(255,255,255,0.055); color: var(--y-text);
+        }
+        .y-project-more + .y-project-new-chat { margin-left: 0; }
+        .y-project-menu {
+          position: absolute; right: 28px; top: 30px; z-index: 25; min-width: 132px; padding: 5px;
+          border: 1px solid var(--y-border-strong); border-radius: 9px;
+          background: rgba(18,18,20,0.98); box-shadow: 0 12px 36px rgba(0,0,0,0.36);
+        }
+        .y-project-menu-item {
+          width: 100%; height: 28px; padding: 0 8px; border: none; border-radius: 7px;
+          background: transparent; color: var(--y-text-2); display: flex; align-items: center; justify-content: space-between;
+          font: inherit; font-size: 12px; cursor: pointer; text-align: left;
+        }
+        .y-project-menu-item:hover, .y-project-menu-item:focus-visible {
+          background: rgba(255,255,255,0.06); color: var(--y-text);
+        }
         .y-project-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .y-project-icon { opacity: 0.72; display: flex; align-items: center; }
         .y-chevron {
-          display: flex; align-items: center; margin-left: auto; flex-shrink: 0;
+          display: flex; align-items: center; flex-shrink: 0;
           opacity: 0; transition: opacity 0.12s ease, transform 0.15s ease;
         }
         .y-project-head:hover .y-chevron { opacity: 0.45; }
         .y-project.is-closed .y-chevron { transform: rotate(-90deg); }
         .y-chat-list {
-          margin: 2px 0 0 14px; padding-left: 0;
+          margin: 2px 16px 0 14px; padding-left: 0;
+        }
+        .y-chat-list-toggle {
+          width: 100%; height: 26px; margin: 2px 0 4px; padding: 0 8px;
+          border: none; border-radius: 7px; background: transparent; color: var(--y-text-3);
+          display: flex; align-items: center; justify-content: flex-start;
+          font: inherit; font-size: 11.5px; cursor: pointer;
+        }
+        .y-chat-list-toggle:hover, .y-chat-list-toggle:focus-visible {
+          background: rgba(255,255,255,0.045); color: var(--y-text-2); outline: none;
         }
         .y-chat-item {
-          margin-left: 0; padding: 5px 8px; border-radius: 7px; font-size: 12.5px;
+          margin-left: 0; padding: 5px 12px 5px 8px; border-radius: 7px; font-size: 12.5px;
           color: var(--y-text-2); cursor: pointer; border: none; background: transparent;
-          font: inherit; text-align: left; width: calc(100% - 4px); display: flex; align-items: center; gap: 7px;
+          font: inherit; text-align: left; width: 100%; display: flex; align-items: center; gap: 7px;
         }
         .y-chat-item:focus-visible {
           outline: 1px solid rgba(222,190,156,0.42); outline-offset: 1px;
@@ -3714,13 +4288,17 @@ export default function Chat() {
         .y-chat-title {
           flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
         }
+        .y-chat-isolated-icon {
+          flex: 0 0 16px; width: 16px; height: 16px; display: inline-flex; align-items: center; justify-content: center;
+          color: rgba(222,190,156,0.72);
+        }
         .y-chat-rename {
           flex: 1; min-width: 0; height: 22px; padding: 0 5px; border-radius: 6px;
           border: 1px solid rgba(222,190,156,0.26); background: rgba(0,0,0,0.22);
           color: var(--y-text); font: inherit; font-size: 12.5px; outline: none;
         }
         .y-chat-right {
-          margin-left: auto; flex: 0 0 28px; width: 28px; min-width: 28px; position: relative;
+          margin-left: auto; flex: 0 0 42px; width: 42px; min-width: 42px; position: relative;
           display: inline-flex; align-items: center; justify-content: flex-end; align-self: center; height: 22px;
         }
         .y-chat-meta { font-size: 11px; color: var(--y-text-3); transition: opacity 0.12s ease; white-space: nowrap; line-height: 22px; height: 22px; display: block; }
@@ -3755,11 +4333,18 @@ export default function Chat() {
         @keyframes y-spin { to { transform: rotate(360deg); } }
         .y-sidebar-foot {
           padding: 8px 10px 0; border-top: 1px solid var(--y-border); margin-top: auto;
+          display: flex; align-items: center; gap: 6px;
         }
-        .y-sidebar-foot .y-nav-btn { width: 100%; }
+        .y-sidebar-foot .y-nav-btn { flex: 1; min-width: 0; }
+        .y-feedback-btn {
+          width: 34px; height: 34px; flex: 0 0 34px; margin-left: auto; border-radius: 9px; border: none;
+          background: transparent; color: var(--y-text-2); display: flex; align-items: center; justify-content: center;
+          cursor: pointer; transition: background 0.12s, color 0.12s;
+        }
+        .y-feedback-btn:hover, .y-feedback-btn.active { background: rgba(255,255,255,0.05); color: var(--y-text); }
 	        .y-main {
-	          flex: 1; min-width: 0; display: flex; flex-direction: column;
-	          background: var(--y-main); position: relative;
+	          flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column;
+	          background: var(--y-main); position: relative; overflow: hidden;
 	          transition: flex 0.26s cubic-bezier(0.4, 0, 0.2, 1);
 	        }
 	        .y-header {
@@ -3787,7 +4372,7 @@ export default function Chat() {
 	        .y-icon-btn.active {
 	          background: rgba(255,255,255,0.07); border-color: rgba(255,255,255,0.13); color: var(--y-text);
 	        }
-        .y-title { flex: 1; min-width: 0; font-size: 14px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transform: translateY(1px); }
+        .y-title { flex: 1; min-width: 0; font-size: 14px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transform: translateY(3px); }
         .y-header-actions { display: flex; flex-shrink: 0; gap: 6px; align-items: center; }
         .y-modify-btn {
           display: inline-flex; align-items: center; gap: 6px;
@@ -3879,6 +4464,76 @@ export default function Chat() {
         .y-file-code-pre::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 99px; }
         .y-file-code-pre::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.22); }
         .y-file-code-pre code { background: none; padding: 0; font-size: inherit; font-weight: 400; font-family: inherit; color: inherit; border-radius: 0; }
+        .y-file-code-pre .hljs-keyword, .y-file-editor-shell .hljs-keyword,
+        .y-file-code-pre .hljs-operator, .y-file-editor-shell .hljs-operator,
+        .y-file-code-pre .hljs-selector-tag, .y-file-editor-shell .hljs-selector-tag,
+        .y-file-code-pre .hljs-tag, .y-file-editor-shell .hljs-tag,
+        .y-file-code-pre .hljs-deletion, .y-file-editor-shell .hljs-deletion { color: #ff5370; }
+        .y-file-code-pre .hljs-title, .y-file-editor-shell .hljs-title,
+        .y-file-code-pre .hljs-title.class_, .y-file-editor-shell .hljs-title.class_,
+        .y-file-code-pre .hljs-title.function_, .y-file-editor-shell .hljs-title.function_,
+        .y-file-code-pre .hljs-section, .y-file-editor-shell .hljs-section { color: #c792ea; }
+        .y-file-code-pre .hljs-built_in, .y-file-editor-shell .hljs-built_in,
+        .y-file-code-pre .hljs-builtin-name, .y-file-editor-shell .hljs-builtin-name,
+        .y-file-code-pre .hljs-attr, .y-file-editor-shell .hljs-attr,
+        .y-file-code-pre .hljs-selector-class, .y-file-editor-shell .hljs-selector-class,
+        .y-file-code-pre .hljs-selector-attr, .y-file-editor-shell .hljs-selector-attr,
+        .y-file-code-pre .hljs-selector-pseudo, .y-file-editor-shell .hljs-selector-pseudo,
+        .y-file-code-pre .hljs-attribute, .y-file-editor-shell .hljs-attribute,
+        .y-file-code-pre .hljs-meta, .y-file-editor-shell .hljs-meta,
+        .y-file-code-pre .hljs-link, .y-file-editor-shell .hljs-link { color: #82aaff; }
+        .y-file-code-pre .hljs-string, .y-file-editor-shell .hljs-string,
+        .y-file-code-pre .hljs-doctag, .y-file-editor-shell .hljs-doctag,
+        .y-file-code-pre .hljs-addition, .y-file-editor-shell .hljs-addition,
+        .y-file-code-pre .hljs-regexp, .y-file-editor-shell .hljs-regexp { color: #c3e88d; }
+        .y-file-code-pre .hljs-number, .y-file-editor-shell .hljs-number,
+        .y-file-code-pre .hljs-literal, .y-file-editor-shell .hljs-literal { color: #f78c6c; }
+        .y-file-code-pre .hljs-type, .y-file-editor-shell .hljs-type,
+        .y-file-code-pre .hljs-class .hljs-title, .y-file-editor-shell .hljs-class .hljs-title { color: #ffcb6b; }
+        .y-file-code-pre .hljs-variable, .y-file-editor-shell .hljs-variable,
+        .y-file-code-pre .hljs-template-variable, .y-file-editor-shell .hljs-template-variable,
+        .y-file-code-pre .hljs-subst, .y-file-editor-shell .hljs-subst,
+        .y-file-code-pre .hljs-symbol, .y-file-editor-shell .hljs-symbol,
+        .y-file-code-pre .hljs-bullet, .y-file-editor-shell .hljs-bullet { color: #f07178; }
+        .y-file-code-pre .hljs-comment, .y-file-editor-shell .hljs-comment,
+        .y-file-code-pre .hljs-quote, .y-file-editor-shell .hljs-quote { color: #6b7280; font-style: italic; }
+        .y-file-code-pre .hljs-emphasis, .y-file-editor-shell .hljs-emphasis { font-style: italic; }
+        .y-file-code-pre .hljs-strong, .y-file-editor-shell .hljs-strong { font-weight: 600; }
+        .y-file-diff-pre .hljs-keyword, .tool-activity-detail .hljs-keyword,
+        .y-file-diff-pre .hljs-operator, .tool-activity-detail .hljs-operator,
+        .y-file-diff-pre .hljs-selector-tag, .tool-activity-detail .hljs-selector-tag,
+        .y-file-diff-pre .hljs-tag, .tool-activity-detail .hljs-tag,
+        .y-file-diff-pre .hljs-deletion, .tool-activity-detail .hljs-deletion { color: #ff5370; }
+        .y-file-diff-pre .hljs-title, .tool-activity-detail .hljs-title,
+        .y-file-diff-pre .hljs-title.class_, .tool-activity-detail .hljs-title.class_,
+        .y-file-diff-pre .hljs-title.function_, .tool-activity-detail .hljs-title.function_,
+        .y-file-diff-pre .hljs-section, .tool-activity-detail .hljs-section { color: #c792ea; }
+        .y-file-diff-pre .hljs-built_in, .tool-activity-detail .hljs-built_in,
+        .y-file-diff-pre .hljs-builtin-name, .tool-activity-detail .hljs-builtin-name,
+        .y-file-diff-pre .hljs-attr, .tool-activity-detail .hljs-attr,
+        .y-file-diff-pre .hljs-selector-class, .tool-activity-detail .hljs-selector-class,
+        .y-file-diff-pre .hljs-selector-attr, .tool-activity-detail .hljs-selector-attr,
+        .y-file-diff-pre .hljs-selector-pseudo, .tool-activity-detail .hljs-selector-pseudo,
+        .y-file-diff-pre .hljs-attribute, .tool-activity-detail .hljs-attribute,
+        .y-file-diff-pre .hljs-meta, .tool-activity-detail .hljs-meta,
+        .y-file-diff-pre .hljs-link, .tool-activity-detail .hljs-link { color: #82aaff; }
+        .y-file-diff-pre .hljs-string, .tool-activity-detail .hljs-string,
+        .y-file-diff-pre .hljs-doctag, .tool-activity-detail .hljs-doctag,
+        .y-file-diff-pre .hljs-addition, .tool-activity-detail .hljs-addition,
+        .y-file-diff-pre .hljs-regexp, .tool-activity-detail .hljs-regexp { color: #c3e88d; }
+        .y-file-diff-pre .hljs-number, .tool-activity-detail .hljs-number,
+        .y-file-diff-pre .hljs-literal, .tool-activity-detail .hljs-literal { color: #f78c6c; }
+        .y-file-diff-pre .hljs-type, .tool-activity-detail .hljs-type,
+        .y-file-diff-pre .hljs-class .hljs-title, .tool-activity-detail .hljs-class .hljs-title { color: #ffcb6b; }
+        .y-file-diff-pre .hljs-variable, .tool-activity-detail .hljs-variable,
+        .y-file-diff-pre .hljs-template-variable, .tool-activity-detail .hljs-template-variable,
+        .y-file-diff-pre .hljs-subst, .tool-activity-detail .hljs-subst,
+        .y-file-diff-pre .hljs-symbol, .tool-activity-detail .hljs-symbol,
+        .y-file-diff-pre .hljs-bullet, .tool-activity-detail .hljs-bullet { color: #f07178; }
+        .y-file-diff-pre .hljs-comment, .tool-activity-detail .hljs-comment,
+        .y-file-diff-pre .hljs-quote, .tool-activity-detail .hljs-quote { color: #6b7280; font-style: italic; }
+        .y-file-diff-pre .hljs-emphasis, .tool-activity-detail .hljs-emphasis { font-style: italic; }
+        .y-file-diff-pre .hljs-strong, .tool-activity-detail .hljs-strong { font-weight: 600; }
         .y-file-diff-pre {
           flex: 1; margin: 0; padding: 0 0 36px; overflow: auto;
           font-family: var(--y-mono); font-size: var(--y-code-size); line-height: var(--y-code-line); tab-size: 2;
@@ -3998,7 +4653,7 @@ export default function Chat() {
           display: inline-flex; align-items: center; gap: 8px;
         }
         .y-empty-action:hover { background: rgba(255,255,255,0.09); }
-        .y-log { flex: 1; min-height: 0; overflow: auto; padding: 28px 24px 12px; user-select: text; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.12) transparent; position: relative; }
+        .y-log { flex: 1; min-height: 0; overflow: auto; padding: 28px 24px 40px; user-select: text; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.12) transparent; position: relative; }
         .y-log::-webkit-scrollbar { width: 5px; }
         .y-log::-webkit-scrollbar-track { background: transparent; }
         .y-log::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 99px; }
@@ -4027,6 +4682,7 @@ export default function Chat() {
           box-shadow: 0 8px 18px rgba(0,0,0,0.24);
         }
         .y-message-action:hover { color: var(--y-text); background: rgba(255,255,255,0.07); }
+        .y-message-action.is-copied { color: #fff; background: rgba(255,255,255,0.1); }
         .y-user-bubble {
           padding: 11px 16px; border-radius: 18px 18px 6px 18px;
           background: rgba(255,255,255,0.055); border: 1px solid rgba(255,255,255,0.05);
@@ -4088,8 +4744,9 @@ export default function Chat() {
         .md-code { margin: 2px 8px; overflow: hidden; background: var(--y-code-bg); border: 1px solid rgba(255,255,255,0.07); border-radius: 12px; }
         .md-code-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-bottom: 1px solid rgba(255,255,255,0.06); background: var(--y-code-bg); }
         .md-code-lang { font-family: var(--y-mono); font-size: 11px; color: rgba(255,255,255,0.3); text-transform: lowercase; }
-        .md-code-copy { font: inherit; font-size: 11px; font-weight: 500; color: rgba(255,255,255,0.35); background: transparent; border: none; cursor: pointer; }
-        .md-code-copy:hover { color: rgba(255,255,255,0.7); }
+        .md-code-copy { width: 24px; height: 24px; color: rgba(255,255,255,0.35); background: transparent; border: none; border-radius: 7px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+        .md-code-copy:hover { color: rgba(255,255,255,0.7); background: rgba(255,255,255,0.06); }
+        .md-code-copy.is-copied { color: #fff; background: rgba(255,255,255,0.1); }
         .md-code-pre {
           margin: 0; padding: 16px 18px; overflow: auto;
           font-family: var(--y-mono); font-size: var(--y-code-size); line-height: var(--y-code-line); white-space: pre; tab-size: 2;
@@ -4192,6 +4849,77 @@ export default function Chat() {
           border-radius: 10px; padding: 8px 14px; font-size: 12px; color: var(--y-text-2);
           z-index: 30; pointer-events: none; max-width: 90%; text-align: center;
         }
+        .y-modal-backdrop {
+          position: absolute; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center;
+          padding: 24px; background: rgba(0,0,0,0.42); backdrop-filter: blur(10px);
+        }
+        .y-isolation-dialog {
+          width: min(420px, 100%); border: 1px solid var(--y-border-strong); border-radius: 14px;
+          background: rgba(18,18,20,0.98); box-shadow: 0 24px 80px rgba(0,0,0,0.52);
+          padding: 18px; color: var(--y-text);
+        }
+        .y-isolation-title {
+          margin: 0; font-size: 15px; line-height: 1.35; font-weight: 650; letter-spacing: 0;
+        }
+        .y-isolation-copy {
+          margin: 8px 0 0; color: var(--y-text-2); font-size: 12.5px; line-height: 1.55;
+        }
+        .y-isolation-path {
+          margin-top: 12px; padding: 8px 10px; border-radius: 8px; background: rgba(255,255,255,0.04);
+          color: var(--y-text-3); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .y-isolation-actions {
+          display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px;
+        }
+        .y-isolation-action {
+          height: 34px; padding: 0 12px; border-radius: 9px; border: 1px solid var(--y-border);
+          background: rgba(255,255,255,0.04); color: var(--y-text-2); font: inherit; font-size: 12.5px;
+          cursor: pointer;
+        }
+        .y-isolation-action:hover, .y-isolation-action:focus-visible {
+          background: rgba(255,255,255,0.08); color: var(--y-text);
+        }
+        .y-isolation-action.primary {
+          background: rgba(255,255,255,0.92); border-color: rgba(255,255,255,0.92); color: #111;
+        }
+        .y-isolation-action.primary:hover, .y-isolation-action.primary:focus-visible {
+          background: #fff; border-color: #fff; color: #050505;
+        }
+        .y-feedback-dialog {
+          width: min(390px, 100%); border: 1px solid var(--y-border-strong); border-radius: 14px;
+          background: rgba(18,18,20,0.98); box-shadow: 0 24px 80px rgba(0,0,0,0.52);
+          padding: 16px; color: var(--y-text);
+        }
+        .y-feedback-head {
+          display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;
+        }
+        .y-feedback-head h2 {
+          margin: 0; font-size: 15px; line-height: 1.35; font-weight: 650; letter-spacing: 0;
+        }
+        .y-feedback-head p {
+          margin: 6px 0 0; color: var(--y-text-3); font-size: 12px; line-height: 1.45;
+        }
+        .y-feedback-close {
+          width: 28px; height: 28px; border-radius: 8px; border: none; background: transparent;
+          color: var(--y-text-3); cursor: pointer; display: flex; align-items: center; justify-content: center;
+        }
+        .y-feedback-close:hover { background: rgba(255,255,255,0.06); color: var(--y-text); }
+        .y-feedback-form { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; }
+        .y-feedback-form textarea {
+          width: 100%; border: 1px solid var(--y-border); border-radius: 10px;
+          background: rgba(255,255,255,0.04); color: var(--y-text); font: inherit; font-size: 13px;
+          outline: none; box-sizing: border-box;
+        }
+        .y-feedback-form textarea { min-height: 118px; resize: vertical; padding: 11px 12px; line-height: 1.5; }
+        .y-feedback-form textarea:focus { border-color: rgba(222,190,156,0.32); background: rgba(255,255,255,0.055); }
+        .y-feedback-actions { display: flex; justify-content: flex-end; gap: 8px; }
+        .y-feedback-submit {
+          height: 34px; padding: 0 13px; border-radius: 9px; border: 1px solid rgba(255,255,255,0.9);
+          background: rgba(255,255,255,0.92); color: #111; font: inherit; font-size: 12.5px; font-weight: 600;
+          cursor: pointer;
+        }
+        .y-feedback-submit:hover:not(:disabled) { background: #fff; border-color: #fff; }
+        .y-feedback-submit:disabled { opacity: 0.36; cursor: default; }
         .y-settings-panel {
           margin: 0 10px 8px; padding: 10px; border-radius: 10px;
           border: 1px solid var(--y-border); background: rgba(0,0,0,0.18);
@@ -4200,8 +4928,11 @@ export default function Chat() {
         .y-settings-title { font-size: 12px; font-weight: 600; color: var(--y-text); }
         .y-settings-row { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; color: var(--y-text-2); }
         .y-settings-row span:last-child { color: var(--y-text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .y-settings-view { flex: 1; min-height: 0; overflow: hidden; border-top: 1px solid rgba(255,255,255,0.045); }
-        .y-settings-content { height: 100%; overflow: auto; padding: 34px clamp(28px, 7vw, 96px) 76px; display: flex; flex-direction: column; gap: 28px; }
+        .y-settings-view { flex: 1 1 auto; min-height: 0; overflow: hidden; border-top: 1px solid rgba(255,255,255,0.045); display: flex; flex-direction: column; }
+        .y-settings-content { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 34px clamp(28px, 7vw, 96px) 96px; display: flex; flex-direction: column; align-items: center; gap: 28px; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.12) transparent; }
+        .y-settings-content::-webkit-scrollbar { width: 10px; }
+        .y-settings-content::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border: 3px solid transparent; border-radius: 999px; background-clip: padding-box; }
+        .y-settings-content::-webkit-scrollbar-track { background: transparent; }
         .y-settings-header-close { color: var(--y-text-3); }
         .y-settings-lead { margin: 7px 0 0; color: var(--y-text-3); font-size: 12.5px; }
         .y-settings-action { height: 30px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--y-border); background: rgba(255,255,255,0.04); color: var(--y-text-2); font: inherit; font-size: 12px; cursor: pointer; }
@@ -4210,9 +4941,23 @@ export default function Chat() {
         .y-settings-action:disabled:hover { background: rgba(255,255,255,0.04); color: var(--y-text-2); }
         .y-settings-action.danger { color: rgba(255,145,145,0.92); border-color: rgba(255,120,120,0.2); }
         .y-settings-action.danger:hover { background: rgba(255,80,80,0.08); color: rgba(255,170,170,0.96); }
-        .y-settings-section { max-width: 760px; width: 100%; display: flex; flex-direction: column; gap: 12px; }
+        .y-settings-section { width: min(760px, 100%); display: flex; flex-direction: column; gap: 12px; }
         .y-settings-section h2 { margin: 0 0 6px; font-size: 15px; font-weight: 600; }
         .y-settings-card { min-height: 68px; padding: 14px 16px; border: 1px solid var(--y-border); border-radius: 12px; background: rgba(255,255,255,0.025); display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+        .y-account-card { min-height: 76px; }
+        .y-account-main { min-width: 0; display: flex; align-items: center; gap: 12px; }
+        .y-account-avatar { width: 38px; height: 38px; flex: 0 0 38px; border-radius: 50%; overflow: hidden; border: 1px solid var(--y-border); background: rgba(255,255,255,0.06); display: grid; place-items: center; color: var(--y-text); font-size: 13px; font-weight: 700; }
+        .y-account-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+        .y-account-avatar span { transform: translateY(-0.5px); }
+        .y-connected-card { align-items: flex-start; flex-direction: column; gap: 14px; }
+        .y-connected-list { width: 100%; display: flex; flex-direction: column; gap: 8px; }
+        .y-connected-item { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 9px 10px; border: 1px solid rgba(255,255,255,0.07); border-radius: 10px; background: rgba(255,255,255,0.025); }
+        .y-connected-avatar { width: 28px; height: 28px; flex: 0 0 28px; border-radius: 50%; overflow: hidden; border: 1px solid var(--y-border); background: rgba(255,255,255,0.06); display: grid; place-items: center; color: var(--y-text); font-size: 11px; font-weight: 700; }
+        .y-connected-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+        .y-connected-item > div:last-child { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+        .y-connected-item p, .y-connected-item span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .y-connected-item p { margin: 1px 0 0; color: var(--y-text-2); font-size: 11.5px; }
+        .y-connected-item span { color: var(--y-text-3); font-family: var(--y-mono); font-size: 10.5px; }
         .y-settings-card.is-column { align-items: flex-start; flex-direction: column; gap: 7px; }
         .y-settings-card strong, .y-agent-card strong { font-size: 12.5px; font-weight: 600; }
         .y-settings-card p, .y-agent-card p { margin: 4px 0 0; color: var(--y-text-3); font-size: 11.5px; line-height: 1.5; }
@@ -4265,7 +5010,7 @@ export default function Chat() {
         .tool-diff-ln, .tool-diff-gutter { color: rgba(170,170,175,0.56); text-align: right; user-select: none; }
         .tool-diff-ln { align-self: stretch; display: flex; align-items: center; justify-content: flex-end; padding-right: 12px; border-right: 1px solid rgba(255,255,255,0.07); background: var(--y-code-bg); }
         .tool-diff-gutter { align-self: stretch; display: flex; align-items: center; justify-content: center; text-align: center; }
-        .tool-diff-line code { display: block; min-width: 0; color: var(--y-code-color); font-family: inherit; font-size: inherit; line-height: inherit; background: none; border-radius: 0; font-weight: 400; padding: 6px 14px 6px 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+        .tool-diff-line code { display: block; min-width: 0; color: var(--y-code-color); font-family: var(--y-mono); font-size: var(--y-code-size); line-height: var(--y-code-line); background: none; border-radius: 0; font-weight: 400; padding: 6px 14px 6px 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
         .tool-diff-del .tool-diff-gutter, .tool-diff-del code { background: rgba(248, 81, 73, 0.15); }
         .tool-diff-add .tool-diff-gutter, .tool-diff-add code { background: rgba(46, 160, 67, 0.17); }
         .tool-diff-del .tool-diff-gutter { color: #ff7b72; }
@@ -4379,10 +5124,15 @@ export default function Chat() {
         .y-suggest {
           position: absolute; left: 12px; right: 12px; bottom: calc(100% + 8px);
           z-index: 40;
-          border: 1px solid var(--y-border); border-radius: 12px; overflow-y: auto;
+          border: 1px solid var(--y-border); border-radius: 12px; overflow-y: auto; overflow-x: hidden;
           max-height: min(260px, 38vh);
           background: rgba(12,12,14,0.96); box-shadow: 0 12px 36px rgba(0,0,0,0.34);
+          scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.12) transparent;
         }
+        .y-suggest::-webkit-scrollbar { width: 5px; }
+        .y-suggest::-webkit-scrollbar-track { background: transparent; }
+        .y-suggest::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 99px; }
+        .y-suggest::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.22); }
         .y-suggest-item {
           display: flex; align-items: center; gap: 9px; width: 100%; padding: 8px 10px;
           border: none; border-bottom: 1px solid rgba(255,255,255,0.06); background: transparent;
@@ -4808,20 +5558,70 @@ export default function Chat() {
                   Add a folder
                 </button>
               ) : null}
-              {filteredProjects.map((proj) => (
+              {filteredProjects.map((proj) => {
+                const chatListExpanded = Boolean(expandedChatProjects[proj.id])
+                const hiddenChatCount = Math.max(0, proj.chats.length - CHAT_LIST_COLLAPSED_LIMIT)
+                const visibleChats = chatListExpanded ? proj.chats : proj.chats.slice(0, CHAT_LIST_COLLAPSED_LIMIT)
+                return (
                 <div key={proj.id} className={'y-project' + (proj.open ? '' : ' is-closed')}>
                   <button type="button" className="y-project-head" title={proj.path} onClick={() => toggleProject(proj.id)}>
                     <span className="y-project-icon"><FolderIcon open={proj.open} size={20} /></span>
                     <span className="y-project-name">{proj.name}</span>
+                    <span
+                      className={'y-project-more' + (openProjectMenuId === proj.id ? ' is-open' : '')}
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`Folder actions for ${proj.name}`}
+                      title="Folder actions"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        setOpenProjectMenuId((id) => (id === proj.id ? null : proj.id))
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key !== 'Enter' && event.key !== ' ') return
+                        event.preventDefault()
+                        event.stopPropagation()
+                        setOpenProjectMenuId((id) => (id === proj.id ? null : proj.id))
+                      }}
+                    >
+                      <Icon name="more" size={14} />
+                    </span>
+                    <span
+                      className="y-project-new-chat"
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`New chat in ${proj.name}`}
+                      title="New chat"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        void newChatFromProject(proj.id)
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key !== 'Enter' && event.key !== ' ') return
+                        event.preventDefault()
+                        event.stopPropagation()
+                        void newChatFromProject(proj.id)
+                      }}
+                    >
+                      <Icon name="plus" size={13} />
+                    </span>
                     <span className="y-chevron"><Icon name="chevron" size={11} /></span>
                   </button>
+                  {openProjectMenuId === proj.id ? (
+                    <div className="y-project-menu" onClick={(event) => event.stopPropagation()}>
+                      <button type="button" className="y-project-menu-item" onClick={() => void removeProject(proj.id)}>
+                        Remove folder
+                      </button>
+                    </div>
+                  ) : null}
                   {proj.open ? (
 	                    <div className="y-chat-list" data-runtime-version={runtimeVersion}>
-	                      {proj.chats.map((c, i) => {
+	                      {visibleChats.map((c, i) => {
 	                        const chatRuntime = runtimesRef.current[c.id]
 	                        const running = Boolean(chatRuntime?.busy)
 	                        const done = Boolean(doneChats[c.id]) && !running
 	                        const renaming = renamingChat?.chatId === c.id
+	                        const isolated = isIsolatedChat(c, proj)
 	                        return (
 	                          <div
 	                            role="button"
@@ -4838,6 +5638,11 @@ export default function Chat() {
 	                            {running || done ? (
 	                              <span className="y-chat-indicator" data-state={running ? 'running' : 'done'}>
 	                                {running ? <span className="y-chat-spinner" data-testid="chat-running-indicator" /> : <span className="y-chat-done" data-testid="chat-done-indicator" />}
+	                              </span>
+	                            ) : null}
+	                            {isolated && !renaming ? (
+	                              <span className="y-chat-isolated-icon" title="Isolated workspace">
+	                                <Icon name="branch" size={13} />
 	                              </span>
 	                            ) : null}
 	                            {renaming ? (
@@ -4883,10 +5688,16 @@ export default function Chat() {
 	                          </div>
 	                        )
 	                      })}
+                        {hiddenChatCount > 0 ? (
+                          <button type="button" className="y-chat-list-toggle" onClick={() => toggleChatList(proj.id)}>
+                            {chatListExpanded ? 'Show less' : 'Show more'}
+                          </button>
+                        ) : null}
                     </div>
                   ) : null}
                 </div>
-              ))}
+                )
+              })}
             </div>
 
             <div className="y-sidebar-foot">
@@ -4894,12 +5705,25 @@ export default function Chat() {
                 const opening = !settingsOpen
                 setSettingsOpen(opening)
                 if (opening) {
+                  trackEvent('settings_opened')
                   setFileRailOpen(false)
                   setTerminalDockOpen(false)
                   if (modifyOpen && !PREVIEW) window.y.modify.close()
                 }
               }}>
                 Settings
+              </button>
+              <button
+                type="button"
+                className={'y-feedback-btn' + (feedbackOpen ? ' active' : '')}
+                aria-label="Send feedback"
+                title="Send feedback"
+                onClick={() => {
+                  trackEvent('feedback_dialog_opened', { source: settingsOpen ? 'settings' : 'sidebar' })
+                  setFeedbackOpen(true)
+                }}
+              >
+                <Icon name="help" size={16} />
               </button>
             </div>
           </div>
@@ -4926,6 +5750,62 @@ export default function Chat() {
 	          onDrop={handleChatDrop}
 	        >
 	          {toast ? <div className="y-toast">{toast}</div> : null}
+	          {isolationChoice ? (
+	            <div className="y-modal-backdrop" role="presentation" onMouseDown={cancelIsolationChoice}>
+	              <div
+	                className="y-isolation-dialog"
+	                role="dialog"
+	                aria-modal="true"
+	                aria-labelledby="y-isolation-title"
+	                tabIndex={-1}
+	                onKeyDown={onIsolationKeyDown}
+	                onMouseDown={(event) => event.stopPropagation()}
+	              >
+	                <h2 id="y-isolation-title" className="y-isolation-title">Use an isolated workspace?</h2>
+	                <p className="y-isolation-copy">
+	                  y can create a separate Git worktree for this chat so agents can run in parallel without editing the same files.
+	                  Your current folder stays untouched.
+	                </p>
+	                <div className="y-isolation-path" title={isolationChoice.projectName}>{isolationChoice.projectName}</div>
+	                <div className="y-isolation-actions">
+	                  <button type="button" className="y-isolation-action" onClick={() => void chooseIsolation(false)}>
+	                    Use same folder
+	                  </button>
+	                  <button type="button" className="y-isolation-action primary" onClick={() => void chooseIsolation(true)}>
+	                    Isolate workspace
+	                  </button>
+	                </div>
+	              </div>
+	            </div>
+	          ) : null}
+	          {feedbackOpen ? (
+	            <div className="y-modal-backdrop" role="presentation" onMouseDown={() => setFeedbackOpen(false)}>
+	              <div className="y-feedback-dialog" role="dialog" aria-modal="true" aria-labelledby="y-feedback-title" onMouseDown={(event) => event.stopPropagation()}>
+	                <div className="y-feedback-head">
+	                  <div>
+	                    <h2 id="y-feedback-title">Send feedback</h2>
+	                    <p>Tell us what broke, what feels off, or what you want y to do better.</p>
+	                  </div>
+	                  <button type="button" className="y-feedback-close" aria-label="Close feedback" onClick={() => setFeedbackOpen(false)}>
+	                    <Icon name="x" size={14} />
+	                  </button>
+	                </div>
+	                <div className="y-feedback-form">
+	                  <textarea
+	                    value={feedbackMessage}
+	                    onChange={(event) => setFeedbackMessage(event.currentTarget.value)}
+	                    placeholder="What should we know?"
+	                    autoFocus
+	                  />
+	                  <div className="y-feedback-actions">
+	                    <button type="button" className="y-feedback-submit" disabled={!feedbackMessage.trim() || feedbackSending} onClick={() => void submitFeedback()}>
+	                      {feedbackSending ? 'Sending...' : 'Send'}
+	                    </button>
+	                  </div>
+	                </div>
+	              </div>
+	            </div>
+	          ) : null}
           <header className="y-header">
             <div className="y-header-lead" aria-hidden="true" />
             <div className="y-header-drag">
@@ -4989,11 +5869,16 @@ export default function Chat() {
 
           {settingsOpen ? (
             <SettingsView
+              accountUser={accountUser}
+              accountBusy={accountBusy}
+              accountChecking={accountChecking}
               soundEnabled={soundEnabled}
               onSoundEnabled={setSoundEnabled}
               engines={engines}
               catalog={catalog}
               cliStatus={cliStatus}
+              onAccountSignIn={() => void signInFromSettings()}
+              onAccountSignOut={() => void signOutFromSettings()}
               onResetOriginalApp={() => {
                 if (!window.confirm('Reset y to the original app? This replaces your current customized app.')) return
                 void window.y.userland.resetToSeed().then((res) => {
@@ -5064,7 +5949,7 @@ export default function Chat() {
               </div>
               <div className="y-file-body">
                 {fileMode === 'diff' && activeFileDiff ? (
-                  <FileDiffPreview diff={activeFileDiff} />
+                  <FileDiffPreview diff={activeFileDiff} fileName={activeFile.name} content={fileContent} oldContent={activeFileOldContent} />
                 ) : isImageFile(activeFile) ? (
                   <div className="y-file-image">
                     {fileContent ? (
@@ -5216,7 +6101,7 @@ export default function Chat() {
                             classes={CHAT_SURFACE_CLASSES.main}
                             testId="edited-files"
                             onUndo={() => activeChatId ? void undoTurnEdits(activeChatId, i) : undefined}
-                            onOpenFile={(file, diff) => void openEditedFileTarget(file, diff)}
+                            onOpenFile={(file, diff, oldContent) => void openEditedFileTarget(file, diff, oldContent)}
                           />
 	                      </div>
 	                    )

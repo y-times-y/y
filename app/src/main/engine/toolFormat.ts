@@ -54,14 +54,39 @@ function pickString(input: Record<string, unknown>, key: string): string | undef
 function diffPreview(oldS: string, newS: string, maxOutLines = 500): string {
   const oldLines = oldS.split('\n')
   const newLines = newS.split('\n')
+  if (!oldS) {
+    return newLines
+      .slice(0, maxOutLines)
+      .map((l) => '+ ' + l)
+      .join('\n')
+  }
+  if (!newS) {
+    return oldLines
+      .slice(0, maxOutLines)
+      .map((l) => '- ' + l)
+      .join('\n')
+  }
+  const dp = Array.from({ length: oldLines.length + 1 }, () => Array<number>(newLines.length + 1).fill(0))
+  for (let i = oldLines.length - 1; i >= 0; i -= 1) {
+    for (let j = newLines.length - 1; j >= 0; j -= 1) {
+      dp[i][j] = oldLines[i] === newLines[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1])
+    }
+  }
   const out: string[] = []
-  const max = Math.max(oldLines.length, newLines.length)
-  for (let i = 0; i < max && out.length < maxOutLines; i++) {
-    const o = oldLines[i]
-    const n = newLines[i]
-    if (o === n) continue
-    if (o !== undefined) out.push('- ' + o)
-    if (n !== undefined) out.push('+ ' + n)
+  let i = 0
+  let j = 0
+  while ((i < oldLines.length || j < newLines.length) && out.length < maxOutLines) {
+    if (i < oldLines.length && j < newLines.length && oldLines[i] === newLines[j]) {
+      out.push('  ' + oldLines[i])
+      i += 1
+      j += 1
+    } else if (j < newLines.length && (i >= oldLines.length || dp[i][j + 1] >= dp[i + 1][j])) {
+      out.push('+ ' + newLines[j])
+      j += 1
+    } else if (i < oldLines.length) {
+      out.push('- ' + oldLines[i])
+      i += 1
+    }
   }
   if (out.length === 0) return newS || oldS
   return out.join('\n')

@@ -1,4 +1,4 @@
-import { ElectronAPI } from '@electron-toolkit/preload'
+export {}
 
 // The shape of y's brick-box, visible to BOTH preload and renderer
 // (renderer's tsconfig.web.json includes src/preload/*.d.ts).
@@ -15,12 +15,81 @@ interface SnapshotResult {
   error?: string
 }
 
+interface SnapshotEntry {
+  hash: string
+  shortHash: string
+  message: string
+  label: string
+  kind: 'original' | 'change' | 'snapshot'
+  timestamp: string
+  current?: boolean
+}
+
+interface SnapshotHistoryResult {
+  ok: boolean
+  entries?: SnapshotEntry[]
+  error?: string
+}
+
 interface EngineModelCatalog {
   engine: string
   label: string
   logoUrl?: string
   defaultModel: string
-  models: { id: string; label: string }[]
+  models: { id: string; label: string; contextWindow?: number }[]
+}
+
+interface OnboardingCliToolStatus {
+  id: 'claude-code' | 'codex'
+  label: string
+  command: string
+  installed: boolean
+  version?: string
+  authenticated: boolean
+  installCommand: string
+  authCommand: string
+  docsUrl: string
+  error?: string
+}
+
+interface OnboardingCliCheckResult {
+  ok: boolean
+  checkedAt: string
+  tools: OnboardingCliToolStatus[]
+}
+
+interface MissingBrickReport {
+  brick:
+    | 'browser'
+    | 'file_editor'
+    | 'terminal'
+    | 'database'
+    | 'github'
+    | 'figma'
+    | 'web_search'
+    | 'auth'
+    | 'analytics'
+    | 'deployment'
+    | 'unknown'
+  reason:
+    | 'needs_external_page_interaction'
+    | 'needs_project_file_access'
+    | 'needs_shell_execution'
+    | 'needs_remote_repo_context'
+    | 'needs_design_asset_access'
+    | 'needs_live_web_lookup'
+    | 'needs_user_identity'
+    | 'needs_product_event_tracking'
+    | 'needs_hosting_or_release'
+    | 'other'
+  surface: 'main' | 'modify'
+  confidence: 'low' | 'medium' | 'high'
+  engineId?: 'claude-code' | 'codex'
+}
+
+interface AnalyticsResult {
+  ok: boolean
+  error?: string
 }
 
 interface EngineRunOptions {
@@ -233,6 +302,26 @@ interface AppChat {
   runOptions?: EngineRunOptions
 }
 
+interface ModifyChatRecord {
+  id: string
+  title: string
+  createdAt: string
+  updatedAt: string
+  messages: AppMsg[]
+  archived?: boolean
+  engineId?: string
+  modelId?: string
+  runOptions?: EngineRunOptions
+}
+
+interface ModifyChatResult {
+  ok: boolean
+  chats?: ModifyChatRecord[]
+  chat?: ModifyChatRecord
+  activeChatId?: string
+  error?: string
+}
+
 interface AppProject {
   id: string
   name: string
@@ -252,6 +341,19 @@ interface AppStateResult {
   ok: boolean
   canceled?: boolean
   state?: AppState
+  error?: string
+}
+
+interface CreateChatOptions {
+  isolate?: boolean
+}
+
+interface IsolationStatus {
+  ok: boolean
+  git: boolean
+  canIsolate: boolean
+  hasHead: boolean
+  reason?: string
   error?: string
 }
 
@@ -276,6 +378,8 @@ interface SelectFilesResult {
 interface ProjectFileResult {
   ok: boolean
   content?: string
+  path?: string
+  relPath?: string
   error?: string
 }
 
@@ -287,23 +391,46 @@ interface TerminalEvent {
   message?: string
 }
 
+interface ElectronBridge {
+  process: {
+    platform: string
+    versions: {
+      electron?: string
+      chrome?: string
+      node?: string
+    }
+  }
+  window: {
+    onFullscreen: (cb: (full: boolean) => void) => () => void
+  }
+}
+
 interface YApi {
   userland: {
     read: () => Promise<string>
     getPath: () => Promise<string>
     compile: () => Promise<CompileResult>
-    snapshot: () => Promise<SnapshotResult>
+    snapshot: (message?: string) => Promise<SnapshotResult>
     revert: () => Promise<SnapshotResult>
+    history: () => Promise<SnapshotHistoryResult>
+    restoreSnapshot: (hash: string) => Promise<SnapshotResult>
     checkpoint: () => Promise<{ ok: boolean; checkpointId?: string; error?: string }>
     restoreCheckpoint: (checkpointId: string) => Promise<{ ok: boolean; checkpointId?: string; error?: string }>
     resetToSeed: () => Promise<{ ok: boolean; error?: string }>
     onChanged: (cb: () => void) => () => void
   }
+  modify: {
+    open: () => Promise<unknown>
+    close: () => Promise<unknown>
+    toggle: () => Promise<unknown>
+    onChange: (cb: (open: boolean) => void) => () => void
+    onOpenFile: (cb: (payload: { file: string; diff: string; oldContent?: string }) => void) => () => void
+  }
   engine: {
     list: () => Promise<string[]>
     models: () => Promise<EngineModelCatalog[]>
+    checkCliStatus: () => Promise<OnboardingCliCheckResult>
     start: (args: StartEngineArgs) => Promise<StartResult>
-    startModify: (args: { engine: string; model?: string; options?: EngineRunOptions }) => Promise<StartResult>
     send: (sessionId: string, prompt: string) => Promise<{ ok: boolean; error?: string }>
     command: (sessionId: string, command: EngineCommand) => Promise<EngineCommandResult>
     cancel: (sessionId: string) => Promise<{ ok: boolean }>
@@ -314,7 +441,8 @@ interface YApi {
     checkpoint: (projectId?: string) => Promise<{ ok: boolean; checkpointId?: string; error?: string }>
     restoreCheckpoint: (projectId: string | undefined, checkpointId: string) => Promise<{ ok: boolean; checkpointId?: string; error?: string }>
     addProject: () => Promise<AppStateResult>
-    createChat: (projectId?: string) => Promise<AppStateResult>
+    getIsolationStatus: (projectId?: string) => Promise<IsolationStatus>
+    createChat: (projectId?: string, options?: CreateChatOptions) => Promise<AppStateResult>
     selectFiles: (projectId?: string) => Promise<SelectFilesResult>
     searchFiles: (projectId: string | undefined, query: string) => Promise<{ ok: boolean; files: SelectedFile[]; error?: string }>
     listDirectory: (projectId: string | undefined, directory?: string) => Promise<{ ok: boolean; entries: ProjectDirectoryEntry[]; error?: string }>
@@ -330,7 +458,26 @@ interface YApi {
     ) => Promise<AppStateResult>
     setActive: (projectId: string, chatId: string) => Promise<AppStateResult>
     setProjectOpen: (projectId: string, open: boolean) => Promise<AppStateResult>
+    removeProject: (projectId: string) => Promise<AppStateResult>
+    listModifyChats: () => Promise<ModifyChatResult>
+    createModifyChat: (seed?: { engineId?: string; modelId?: string; runOptions?: EngineRunOptions }) => Promise<ModifyChatResult>
+    updateModifyChat: (
+      chatId: string,
+      patch: { title?: string; messages?: AppMsg[]; archived?: boolean; engineId?: string; modelId?: string; runOptions?: EngineRunOptions }
+    ) => Promise<ModifyChatResult>
+    setActiveModifyChat: (chatId: string) => Promise<ModifyChatResult>
     onStateChanged: (cb: (state: AppState) => void) => () => void
+  }
+  feedback: {
+    submit: (payload: FeedbackPayload) => Promise<FeedbackResult>
+  }
+  analytics: {
+    identify: (payload: { userId: string; email?: string }) => Promise<AnalyticsResult>
+    track: (name: string, props?: Record<string, unknown>) => Promise<AnalyticsResult>
+    reportMissingBrick: (report: MissingBrickReport) => Promise<AnalyticsResult>
+  }
+  clipboard: {
+    writeText: (text: string) => Promise<AnalyticsResult>
   }
   net: {
     request: (req: NetRequest) => Promise<NetResult>
@@ -350,21 +497,91 @@ interface YApi {
     kill: (id: string) => Promise<{ ok: boolean; error?: string }>
     onEvent: (cb: (event: TerminalEvent) => void) => () => void
   }
-  modify: {
-    open: () => void
-    close: () => void
-    toggle: () => void
-    onChange: (cb: (open: boolean) => void) => () => void
+}
+
+interface KernelAuthTokens {
+  accessToken: string
+  refreshToken: string
+}
+
+interface KernelAuthConnectedAccount {
+  provider: string
+  providerAccountId: string
+  profile?: {
+    username?: string
+    displayName?: string
+    avatarUrl?: string
+    profileUrl?: string
   }
 }
 
+interface KernelAuthUser {
+  id: string
+  email?: string
+  displayName?: string
+  profileImageUrl?: string
+  connectedAccounts?: KernelAuthConnectedAccount[]
+}
+
+interface KernelAuthSession {
+  tokens: KernelAuthTokens
+  user: KernelAuthUser
+  savedAt: string
+}
+
+interface KernelAuthBridge {
+  load: () => Promise<{ ok: boolean; session?: KernelAuthSession | null; error?: string }>
+  restore: () => Promise<{ ok: boolean; session?: KernelAuthSession | null; error?: string }>
+  signIn: () => Promise<{ ok: boolean; user?: KernelAuthUser; error?: string }>
+  save: (payload: { tokens: KernelAuthTokens; user: KernelAuthUser }) => Promise<{ ok: boolean; user?: KernelAuthUser; error?: string }>
+  clear: () => Promise<{ ok: boolean; error?: string }>
+  openExternal: (url: string) => Promise<{ ok: boolean; error?: string }>
+  onCallback: (cb: (url: string) => void) => () => void
+  onChanged: (cb: (session: KernelAuthSession | null) => void) => () => void
+}
+
 declare global {
+  interface SnapshotEntry {
+    hash: string
+    shortHash: string
+    message: string
+    label: string
+    kind: 'original' | 'change' | 'snapshot'
+    timestamp: string
+    current?: boolean
+  }
+
+  interface SnapshotHistoryResult {
+    ok: boolean
+    entries?: SnapshotEntry[]
+    error?: string
+  }
+
   interface EngineModelCatalog {
     engine: string
     label: string
     logoUrl?: string
     defaultModel: string
-    models: { id: string; label: string }[]
+    models: { id: string; label: string; contextWindow?: number }[]
+  }
+
+  interface OnboardingCliToolStatus {
+    id: 'claude-code' | 'codex'
+    label: string
+    command: string
+    installed: boolean
+    version?: string
+    authenticated: boolean
+    installCommand: string
+    authCommand: string
+    docsUrl: string
+    error?: string
+  }
+
+  interface OnboardingCliCheckResult {
+    ok: boolean
+    checkedAt: string
+    tools: OnboardingCliToolStatus[]
   }
 
   interface EngineRunOptions {
@@ -577,6 +794,26 @@ declare global {
     runOptions?: EngineRunOptions
   }
 
+  interface ModifyChatRecord {
+    id: string
+    title: string
+    createdAt: string
+    updatedAt: string
+    messages: AppMsg[]
+    archived?: boolean
+    engineId?: string
+    modelId?: string
+    runOptions?: EngineRunOptions
+  }
+
+  interface ModifyChatResult {
+    ok: boolean
+    chats?: ModifyChatRecord[]
+    chat?: ModifyChatRecord
+    activeChatId?: string
+    error?: string
+  }
+
   interface AppProject {
     id: string
     name: string
@@ -596,6 +833,19 @@ declare global {
     ok: boolean
     canceled?: boolean
     state?: AppState
+    error?: string
+  }
+
+  interface CreateChatOptions {
+    isolate?: boolean
+  }
+
+  interface IsolationStatus {
+    ok: boolean
+    git: boolean
+    canIsolate: boolean
+    hasHead: boolean
+    reason?: string
     error?: string
   }
 
@@ -620,6 +870,8 @@ declare global {
   interface ProjectFileResult {
     ok: boolean
     content?: string
+    path?: string
+    relPath?: string
     error?: string
   }
 
@@ -676,6 +928,7 @@ declare global {
     ok: boolean
     message?: string
     value?: string
+    status?: string
     error?: string
   }
 
@@ -694,6 +947,18 @@ declare global {
     error?: string
   }
 
+  interface FeedbackPayload {
+    message: string
+    category?: string
+    context?: Record<string, unknown>
+  }
+
+  interface FeedbackResult {
+    ok: boolean
+    stored: 'remote' | 'local'
+    error?: string
+  }
+
   interface FilesResult {
     ok: boolean
     error?: string
@@ -708,8 +973,9 @@ declare global {
   }
 
   interface Window {
-    electron: ElectronAPI
+    electron: ElectronBridge
     api: unknown
     y: YApi
+    yKernelAuth: KernelAuthBridge
   }
 }

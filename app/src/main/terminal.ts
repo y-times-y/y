@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { chmodSync, existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
 import { spawn, type IPty } from 'node-pty'
 
 type TerminalEvent =
@@ -21,6 +21,8 @@ type StartTerminalArgs = {
 
 const terminals = new Map<string, IPty>()
 const requireFromHere = createRequire(import.meta.url)
+const MONET_BIN = join(homedir(), 'Library', 'Application Support', 'Monet', 'bin')
+const MACOS_CLI_PATHS = ['/opt/homebrew/bin', '/opt/homebrew/sbin', '/usr/local/bin']
 
 function broadcast(event: TerminalEvent): void {
   for (const w of BrowserWindow.getAllWindows()) {
@@ -45,6 +47,44 @@ function cleanCwd(cwd?: string): string {
   return cwd?.trim() || homedir()
 }
 
+function uniquePathEntries(entries: Array<string | undefined>): string[] {
+  const seen = new Set<string>()
+  const clean: string[] = []
+  for (const entry of entries) {
+    const normalized = entry?.trim()
+    if (!normalized || seen.has(normalized)) continue
+    seen.add(normalized)
+    clean.push(normalized)
+  }
+  return clean
+}
+
+function terminalPath(): string {
+  const basePath = process.env.PATH || ''
+  const inherited = basePath.split(delimiter).filter((entry) => entry && entry !== MONET_BIN)
+  const preferred = process.platform === 'darwin' ? MACOS_CLI_PATHS : []
+  return uniquePathEntries([...preferred, ...inherited]).join(delimiter)
+}
+
+function terminalEnv(): Record<string, string> {
+  const env: Record<string, string> = {}
+  for (const [key, value] of Object.entries(process.env)) {
+    if (typeof value === 'string') env[key] = value
+  }
+
+  // Electron-specific process flags can make Node-backed CLIs behave as if
+  // they were launched inside Electron instead of a user's normal terminal.
+  delete env.ELECTRON_RUN_AS_NODE
+  delete env.ELECTRON_NO_ATTACH_CONSOLE
+
+  env.PATH = terminalPath()
+  env.TERM = 'xterm-256color'
+  env.COLORTERM = 'truecolor'
+  env.FORCE_COLOR = env.FORCE_COLOR || '1'
+  env.CLICOLOR = '1'
+  return env
+}
+
 function ensureNodePtyHelperExecutable(): void {
   if (process.platform !== 'darwin') return
   try {
@@ -67,13 +107,7 @@ export function registerTerminalBricks(): void {
         cwd: cleanCwd(args.cwd),
         cols: args.cols || 96,
         rows: args.rows || 24,
-        env: {
-          ...process.env,
-          TERM: 'xterm-256color',
-          COLORTERM: 'truecolor',
-          FORCE_COLOR: process.env.FORCE_COLOR || '1',
-          CLICOLOR: '1'
-        }
+        env: terminalEnv()
       })
       terminals.set(id, pty)
       pty.onData((data) => broadcast({ kind: 'data', id, data }))

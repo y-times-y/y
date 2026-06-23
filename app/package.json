@@ -13,6 +13,7 @@
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "start": "electron-vite preview",
     "dev": "electron-vite dev",
+    "dev:hexclave": "hexclave dev --config-file ./hexclave.config.ts -- pnpm dev",
     "build": "npm run typecheck && electron-vite build",
     "postinstall": "electron-builder install-app-deps",
     "build:unpack": "npm run build && electron-builder --dir",
@@ -25,8 +26,10 @@
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.2",
     "@electron-toolkit/utils": "^4.0.0",
+    "@hexclave/react": "^1.0.23",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
+    "better-sqlite3": "^12.11.1",
     "esbuild": "^0.28.0",
     "highlight.js": "^11.11.1",
     "node-pty": "^1.1.0",
@@ -38,6 +41,7 @@
     "@electron-toolkit/eslint-config-prettier": "^3.0.0",
     "@electron-toolkit/eslint-config-ts": "^3.1.0",
     "@electron-toolkit/tsconfig": "^2.0.0",
+    "@hexclave/cli": "^1.0.23",
     "@playwright/test": "^1.55.0",
     "@types/node": "^22.19.1",
     "@types/react": "^19.2.7",
@@ -59,6 +63,7 @@
   "pnpm": {
     "onlyBuiltDependencies": [
       "electron",
+      "better-sqlite3",
       "esbuild",
       "node-pty"
     ]

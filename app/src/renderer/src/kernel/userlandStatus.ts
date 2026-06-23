@@ -20,9 +20,12 @@ export type UserlandVerdict =
 export type UserlandOutcome = UserlandVerdict & { at: number }
 
 type Listener = (o: UserlandOutcome) => void
+type AgentWorkingListener = (working: boolean) => void
 
 const listeners = new Set<Listener>()
+const agentWorkingListeners = new Set<AgentWorkingListener>()
 let latest: UserlandOutcome | null = null
+let agentWorking = false
 
 export function publishVerdict(v: UserlandVerdict): void {
   const outcome: UserlandOutcome = { ...v, at: Date.now() }
@@ -38,6 +41,23 @@ export function subscribeVerdict(l: Listener): () => void {
   listeners.add(l)
   return () => {
     listeners.delete(l)
+  }
+}
+
+export function publishAgentWorking(working: boolean): void {
+  if (agentWorking === working) return
+  agentWorking = working
+  agentWorkingListeners.forEach((l) => l(working))
+}
+
+export function latestAgentWorking(): boolean {
+  return agentWorking
+}
+
+export function subscribeAgentWorking(l: AgentWorkingListener): () => void {
+  agentWorkingListeners.add(l)
+  return () => {
+    agentWorkingListeners.delete(l)
   }
 }
 

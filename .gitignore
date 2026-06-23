@@ -1,5 +1,17 @@
 .DS_Store
 *.log
+node_modules/
+**/node_modules/
+**/.wrangler/
+**/playwright-report/
+**/test-results/
+*.tsbuildinfo
+browser-state-check.png
+demo-state*.png
+download-section.png
+hero-*.png
+pillars-section.png
+state1-browser-v2.png
 
 samples/
 .gstack/

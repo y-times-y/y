@@ -2,14 +2,14 @@ import * as React from 'react'
 import UserlandHost from './UserlandHost'
 import ModifyChat from './ModifyChat'
 
-// Kernel frame: Userland fills the window; Modify is a side rail toggled via window.y.modify.
+function trackKernelEvent(name: string, props?: Record<string, unknown>): void {
+  void window.y.analytics.track(name, props)
+}
+
+// Kernel frame: Userland fills the window; Modify is a Kernel-owned rail.
 function Shell(): React.JSX.Element {
   const [modifyOpen, setModifyOpen] = React.useState(false)
   const [modifyWidth, setModifyWidth] = React.useState(420)
-
-  React.useEffect(() => {
-    return window.y.modify.onChange(setModifyOpen)
-  }, [])
 
   function beginModifyResize(event: React.PointerEvent<HTMLDivElement>): void {
     event.preventDefault()
@@ -27,7 +27,7 @@ function Shell(): React.JSX.Element {
       document.documentElement.classList.remove('is-modify-resizing')
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', stop)
-      if (shouldCollapse) window.requestAnimationFrame(() => window.y.modify.close())
+      if (shouldCollapse) window.requestAnimationFrame(() => setModifyOpen(false))
     }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', stop)
@@ -37,8 +37,29 @@ function Shell(): React.JSX.Element {
     if (window.electron?.process?.platform === 'darwin') {
       document.documentElement.classList.add('platform-darwin')
     }
-    return window.electron?.ipcRenderer?.on('window:fullscreen', (_e, full: boolean) => {
+    return window.electron?.window?.onFullscreen((full: boolean) => {
       document.documentElement.classList.toggle('is-fullscreen', full)
+    })
+  }, [])
+
+  const openModify = React.useCallback((source: string): void => {
+    setModifyOpen((open) => {
+      if (!open) trackKernelEvent('modify_opened', { source })
+      return true
+    })
+  }, [])
+
+  const closeModify = React.useCallback((source: string): void => {
+    setModifyOpen((open) => {
+      if (open) trackKernelEvent('modify_closed', { source })
+      return false
+    })
+  }, [])
+
+  const toggleModify = React.useCallback((source: string): void => {
+    setModifyOpen((open) => {
+      trackKernelEvent(open ? 'modify_closed' : 'modify_opened', { source })
+      return !open
     })
   }, [])
 
@@ -46,7 +67,12 @@ function Shell(): React.JSX.Element {
     <div className="kernel-shell">
       <div className="kernel-body">
         <main className="userland-slot">
-          <UserlandHost />
+          <UserlandHost
+            modifyOpen={modifyOpen}
+            onModifyOpen={() => openModify('userland')}
+            onModifyClose={() => closeModify('userland')}
+            onModifyToggle={() => toggleModify('userland')}
+          />
         </main>
 
         <aside
@@ -66,7 +92,7 @@ function Shell(): React.JSX.Element {
               if (event.key === 'ArrowRight') setModifyWidth((width) => Math.max(340, width - 10))
             }}
           />
-          <ModifyChat onClose={() => window.y.modify.close()} />
+          <ModifyChat onClose={() => closeModify('modify')} />
         </aside>
       </div>
     </div>

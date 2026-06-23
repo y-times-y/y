@@ -41,8 +41,10 @@ test.describe('y chat UI', () => {
     await page.getByTestId('settings-button').click()
     await expect(page.getByTestId('chat-title')).toHaveText('Settings')
     await expect(page.getByTestId('settings-view')).toContainText('General')
+    await expect(page.getByTestId('settings-view')).toContainText('Agents')
+    await expect(page.getByTestId('settings-view')).toContainText('MCP & Plugins')
+    await expect(page.getByTestId('settings-view')).toContainText('Modify Chat')
     await expect(page.getByTestId('composer')).toHaveCount(0)
-    await page.getByRole('button', { name: 'MCP & Plugins' }).click()
     await expect(page.getByRole('button', { name: 'Plugins', exact: true })).toHaveCount(2)
     await expect(page.getByRole('button', { name: 'MCP', exact: true })).toHaveCount(2)
 
@@ -111,8 +113,8 @@ test.describe('y chat UI', () => {
       const style = getComputedStyle(element)
       return { background: style.backgroundColor, color: style.color, family: style.fontFamily, size: style.fontSize, line: style.lineHeight }
     })
-    expect(codeStyle.background).toBe('rgb(17, 18, 20)')
-    expect(codeStyle.color).toBe('rgb(228, 228, 228)')
+    expect(codeStyle.background).toBe('rgb(241, 237, 230)')
+    expect(codeStyle.color).toBe('rgb(41, 37, 34)')
     expect(codeStyle.family).toContain('ui-monospace')
     expect(codeStyle.size).toBe('13px')
     expect(codeStyle.line).toBe('21.45px')
@@ -120,7 +122,7 @@ test.describe('y chat UI', () => {
     await expect(codeBlock).toHaveCSS('margin-left', '8px')
     await expect(codeBlock).toHaveCSS('margin-right', '8px')
     await expect(codeBlock).toHaveCSS('border-top-style', 'solid')
-    await expect(codeBlock.locator('.md-code-head')).toHaveCSS('background-color', 'rgb(17, 18, 20)')
+    await expect(codeBlock.locator('.md-code-head')).toHaveCSS('background-color', 'rgb(241, 237, 230)')
   })
 
   test('sidebar chats can be renamed, archived, and auto named from intent', async ({ page }) => {
@@ -160,7 +162,7 @@ test.describe('y chat UI', () => {
     await expect(page.getByTestId('composer')).toHaveCount(0)
     await expect(page.getByTestId('markdown-preview')).toContainText('ytimesy')
     const previewCode = page.getByTestId('markdown-preview').locator('pre')
-    await expect(previewCode.first()).toHaveCSS('background-color', 'rgb(17, 18, 20)')
+    await expect(previewCode.first()).toHaveCSS('background-color', 'rgb(241, 237, 230)')
     await expect(previewCode.first()).toHaveCSS('border-radius', '12px')
     await expect(previewCode.first()).toHaveCSS('padding-left', '18px')
     await expect(page.getByTestId('markdown-preview').locator('.hljs-keyword').first()).toHaveText('from')
@@ -276,6 +278,14 @@ test.describe('y chat UI', () => {
     await expect(page.getByText(/not a y shortcut/i)).toBeVisible()
     await page.locator('.y-drop').first().click()
     await page.getByRole('button', { name: 'Codex' }).click()
+    await page.evaluate(() => {
+      ;(window as typeof window & { __sentPrompts?: string[] }).__sentPrompts = []
+      const original = window.y.engine.send
+      window.y.engine.send = async (sessionId, prompt) => {
+        ;(window as typeof window & { __sentPrompts?: string[] }).__sentPrompts?.push(prompt)
+        return original(sessionId, prompt)
+      }
+    })
     await input.fill('/effort high')
     await page.getByTestId('send-button').click()
     await expect(page.getByText('Reasoning: reasoning effort set to high.')).toBeVisible()
@@ -296,9 +306,26 @@ test.describe('y chat UI', () => {
     await input.fill('/plugins')
     await page.getByTestId('send-button').click()
     await expect(page.getByTestId('composer-terminal')).toContainText('codex /plugins')
+    await page.getByTestId('composer-terminal').getByRole('button', { name: 'Hide terminal' }).click()
+    await expect(page.getByTestId('composer-terminal')).toHaveCount(0)
+    await input.fill('/mcp')
+    await page.getByTestId('send-button').click()
+    await expect(page.getByTestId('composer-terminal')).toContainText('codex /mcp')
     await input.fill('/plugin install example-plugin')
     await page.getByTestId('send-button').click()
     await expect(page.getByTestId('composer-terminal')).toContainText("codex '/plugins install example-plugin'")
+    await input.fill('keep this turn running')
+    await page.getByTestId('send-button').click()
+    await input.fill('/plugins')
+    await page.getByTestId('send-button').click()
+    await expect(page.getByTestId('composer-terminal')).toContainText('codex /plugins')
+    await input.fill('/mcp')
+    await page.getByTestId('send-button').click()
+    await expect(page.getByTestId('composer-terminal')).toContainText('codex /mcp')
+    const sentPrompts = await page.evaluate(() => (window as typeof window & { __sentPrompts?: string[] }).__sentPrompts ?? [])
+    expect(sentPrompts.some((prompt) => prompt.includes('keep this turn running'))).toBe(true)
+    expect(sentPrompts.some((prompt) => prompt.includes('[current user request]\n/plugins') || prompt === '/plugins')).toBe(false)
+    expect(sentPrompts.some((prompt) => prompt.includes('[current user request]\n/mcp') || prompt === '/mcp')).toBe(false)
     const commands = await page.evaluate(() => (window as typeof window & { __engineCommands?: unknown[] }).__engineCommands ?? [])
     expect(commands).toContainEqual({ sessionId: 'preview', command: { name: 'goal', action: 'set', value: 'keep answers short' } })
     expect(commands).toContainEqual({ sessionId: 'preview', command: { name: 'compact' } })
@@ -437,6 +464,33 @@ test.describe('y chat UI', () => {
     await expect(page.getByTestId('assistant-message').last()).toContainText('Read the implementation notes')
     await expect(page.getByTestId('assistant-message').last()).toContainText('renderer. tail')
     await expect(page.getByTestId('assistant-message').last()).not.toHaveClass(/is-streaming/)
+  })
+
+  test('modify buffers streaming text like the main composer', async ({ page }) => {
+    await page.goto('/preview.html?mode=modify')
+    await page.locator('[data-testid="modify-composer"] textarea').fill('Stream with markdown')
+    await page.getByRole('button', { name: 'Send' }).click()
+    const assistantCountBeforeStream = await page.locator('.modify-assistant-message').count()
+    await page.evaluate(() => {
+      const emit = (window as typeof window & { __emitEngineEvent?: (event: AgentEvent) => void }).__emitEngineEvent
+      emit?.({ kind: 'text', text: 'Read [the implementation' })
+      emit?.({ kind: 'thinking', text: 'Checking the app structure.' })
+      emit?.({ kind: 'tool', name: 'Read', phase: 'end', id: 'modify-stream-read', verb: 'Read', target: 'app/userland-seed/panel.tsx', body: 'export default function Panel() {}' })
+    })
+    await expect(page.getByTestId('thinking-block')).toContainText('Checking the app structure.')
+    await expect(page.locator('.tool-activity').filter({ hasText: 'Read' })).toBeVisible()
+    await new Promise((resolve) => setTimeout(resolve, 90))
+    expect(await page.locator('.modify-assistant-message').count()).toBe(assistantCountBeforeStream)
+
+    await page.evaluate(() => {
+      const emit = (window as typeof window & { __emitEngineEvent?: (event: AgentEvent) => void }).__emitEngineEvent
+      emit?.({ kind: 'text', text: ' notes](README.md) before deciding what to change in the renderer. ' })
+      emit?.({ kind: 'text', text: 'tail' })
+      emit?.({ kind: 'result', ok: true })
+    })
+    await expect(page.locator('.modify-assistant-message').last()).toContainText('Read the implementation notes')
+    await expect(page.locator('.modify-assistant-message').last()).toContainText('renderer. tail')
+    await expect(page.locator('.modify-assistant-message').last()).not.toHaveClass(/is-streaming/)
   })
 
   test('busy chat supports queued follow-ups, boundary steering, and provider-independent editing', async ({ page }) => {
@@ -724,5 +778,270 @@ test.describe('y chat UI', () => {
     await expect(detail.locator('code').first()).toHaveCSS('white-space', 'pre-wrap')
     await expect(items.nth(2)).toContainText('The edit is in place.')
     await page.screenshot({ path: join(shots, 'tool-diff.png'), fullPage: true })
+  })
+
+  test('modify rail keeps the same expanded tool structure without inheriting the main app theme', async ({ page }) => {
+    await page.goto('/preview.html?mode=tool')
+    const mainTool = page.locator('.y-log-inner > *').nth(1)
+    await mainTool.locator('summary').click()
+    const mainDetailBackground = await mainTool.locator('.tool-activity-detail').evaluate((element) => getComputedStyle(element).backgroundColor)
+    const mainMetrics = await mainTool.evaluate((element) => {
+      const read = (selector: string, property: string): string => {
+        const found = element.querySelector(selector)
+        return found ? getComputedStyle(found).getPropertyValue(property) : ''
+      }
+      return {
+        lineFontSize: read('.tool-activity-line', 'font-size'),
+        lineHeight: read('.tool-activity-line', 'line-height'),
+        detailFontSize: read('.tool-activity-detail code', 'font-size'),
+        detailLineHeight: read('.tool-activity-detail code', 'line-height'),
+        detailWhiteSpace: read('.tool-activity-detail code', 'white-space'),
+        detailBorderRadius: read('.tool-activity-detail', 'border-radius'),
+        fileIconViewBox: element.querySelector('.tool-activity-file-icon svg')?.getAttribute('viewBox') ?? '',
+        actionIconViewBox: element.querySelector('.tool-activity-icon svg')?.getAttribute('viewBox') ?? ''
+      }
+    })
+
+    await page.goto('/preview.html?mode=modify')
+    await expect(page.getByTestId('modify-composer')).toBeVisible()
+    const input = page.locator('[data-testid="modify-composer"] textarea')
+    await expect(input).toHaveAttribute('data-native-input', 'true')
+    await input.fill('Update the panel')
+    await page.getByRole('button', { name: 'Send' }).click()
+    await page.evaluate(() => {
+      const emit = (window as typeof window & { __emitEngineEvent?: (event: AgentEvent) => void }).__emitEngineEvent
+      emit?.({ kind: 'thinking', text: 'I should inspect the file before editing.' })
+      emit?.({ kind: 'text', text: 'I will read the panel first.' })
+      emit?.({
+        kind: 'tool',
+        name: 'Read',
+        phase: 'end',
+        id: 'modify-read',
+        verb: 'Read',
+        target: 'app/userland-seed/panel.tsx',
+        body: 'export default function Panel() {\n  return <div>panel</div>\n}'
+      })
+      emit?.({
+        kind: 'tool',
+        name: 'Edit',
+        phase: 'end',
+        id: 'modify-edit',
+        verb: 'Edit',
+        target: 'app/userland-seed/panel.tsx',
+        body: '- const label = "old"\n+ const label = "new"\n+ const tone = "calm"'
+      })
+      emit?.({ kind: 'text', text: 'The panel update is done.' })
+      emit?.({ kind: 'result', ok: true })
+    })
+
+    const work = page.getByTestId('modify-work-log')
+    await expect(work).toBeVisible()
+    await expect(work).not.toHaveAttribute('open', '')
+    await work.locator('summary').first().click()
+
+    const read = work.locator('.tool-activity').filter({ hasText: 'app/userland-seed/panel.tsx' }).first()
+    await expect(read.locator('.tool-activity-verb')).toHaveText('Read')
+    await expect(read.locator('.tool-activity-file-icon svg')).toHaveAttribute('viewBox', '0 0 32 32')
+    await read.locator('summary').click()
+    const modifyMetrics = await read.evaluate((element) => {
+      const readStyle = (selector: string, property: string): string => {
+        const found = element.querySelector(selector)
+        return found ? getComputedStyle(found).getPropertyValue(property) : ''
+      }
+      return {
+        lineFontSize: readStyle('.tool-activity-line', 'font-size'),
+        lineHeight: readStyle('.tool-activity-line', 'line-height'),
+        detailFontSize: readStyle('.tool-activity-detail code', 'font-size'),
+        detailLineHeight: readStyle('.tool-activity-detail code', 'line-height'),
+        detailWhiteSpace: readStyle('.tool-activity-detail code', 'white-space'),
+        detailBorderRadius: readStyle('.tool-activity-detail', 'border-radius'),
+        fileIconViewBox: element.querySelector('.tool-activity-file-icon svg')?.getAttribute('viewBox') ?? '',
+        actionIconViewBox: element.querySelector('.tool-activity-icon svg')?.getAttribute('viewBox') ?? ''
+      }
+    })
+    expect(modifyMetrics).toEqual(mainMetrics)
+    expect(mainDetailBackground).toBe('rgb(241, 237, 230)')
+    await expect(read.locator('.tool-activity-detail')).toHaveCSS('background-color', 'rgb(17, 18, 20)')
+
+    const edit = work.locator('.tool-activity').filter({ hasText: 'Edit' }).last()
+    await expect(edit.locator('.tool-stat-add')).toHaveText('+2')
+    await expect(edit.locator('.tool-stat-del')).toHaveText('-1')
+    await expect(edit.locator('.tool-activity-detail')).toBeHidden()
+    await edit.locator('summary').click()
+    await expect(edit.locator('.tool-diff-gutter').first()).toHaveText('-')
+    await expect(edit.locator('.tool-diff-add .tool-diff-gutter').first()).toHaveText('+')
+    await expect(edit.locator('.tool-diff-line code').first()).toHaveCSS('font-size', '13px')
+    await expect(page.getByTestId('modify-edited-files')).toContainText('Edited 1 file')
+  })
+
+  test('modify rail matches main composer chat structure while keeping its protected theme', async ({ page }) => {
+    const collectMetrics = async (selectors: Record<string, string>) =>
+      page.evaluate((map) => {
+        const props = [
+          'align-self',
+          'border-bottom-left-radius',
+          'border-bottom-right-radius',
+          'border-top-left-radius',
+          'border-top-right-radius',
+          'display',
+          'flex-direction',
+          'font-family',
+          'font-size',
+          'gap',
+          'line-height',
+          'max-height',
+          'max-width',
+          'min-height',
+          'padding-bottom',
+          'padding-left',
+          'padding-right',
+          'padding-top',
+          'white-space'
+        ]
+        const out: Record<string, Record<string, string>> = {}
+        for (const [key, selector] of Object.entries(map)) {
+          const element = document.querySelector(selector)
+          if (!element) {
+            out[key] = { missing: 'true' }
+            continue
+          }
+          const style = getComputedStyle(element)
+          out[key] = Object.fromEntries(props.map((prop) => [prop, style.getPropertyValue(prop)]))
+        }
+        return out
+      }, selectors)
+
+    await page.goto('/preview.html')
+    await page.getByTestId('composer-input').fill('Make the change')
+    await page.getByTestId('send-button').click()
+    await page.evaluate(() => {
+      const emit = (window as typeof window & { __emitEngineEvent?: (event: AgentEvent) => void }).__emitEngineEvent
+      emit?.({ kind: 'thinking', text: 'I should preserve the layout.' })
+      emit?.({ kind: 'text', text: 'I will inspect and update the component.' })
+      emit?.({ kind: 'tool', name: 'Edit', phase: 'end', id: 'main-surface-edit', verb: 'Edit', target: 'app/panel.tsx', body: '- old\n+ new' })
+      emit?.({ kind: 'text', text: 'The component now uses the updated layout.' })
+      emit?.({ kind: 'result', ok: true })
+    })
+    await page.getByTestId('work-log').locator('summary').first().click()
+    const main = await collectMetrics({
+      composer: '.y-composer',
+      composerInput: '.y-composer textarea',
+      userBubble: '.y-user-bubble',
+      assistantFooter: '.y-assistant-footer',
+      assistantAction: '.y-assistant-footer .y-message-action',
+      thinking: '.y-thinking',
+      thinkingSummary: '.y-thinking > summary',
+      thinkingBody: '.y-thinking-body',
+      workLog: '.y-work-log',
+      workSummary: '.y-work-log > summary',
+      workBody: '.y-work-body',
+      editedFiles: '.y-edited-files',
+      editedFile: '.y-edited-file'
+    })
+
+    await page.goto('/preview.html?mode=modify')
+    const input = page.locator('[data-testid="modify-composer"] textarea')
+    await input.fill('Make the change')
+    await page.getByRole('button', { name: 'Send' }).click()
+    await page.evaluate(() => {
+      const emit = (window as typeof window & { __emitEngineEvent?: (event: AgentEvent) => void }).__emitEngineEvent
+      emit?.({ kind: 'thinking', text: 'I should preserve the layout.' })
+      emit?.({ kind: 'text', text: 'I will inspect and update the component.' })
+      emit?.({ kind: 'tool', name: 'Edit', phase: 'end', id: 'modify-surface-edit', verb: 'Edit', target: 'app/panel.tsx', body: '- old\n+ new' })
+      emit?.({ kind: 'text', text: 'The component now uses the updated layout.' })
+      emit?.({ kind: 'result', ok: true })
+    })
+    await page.getByTestId('modify-work-log').locator('summary').first().click()
+    const modify = await collectMetrics({
+      composer: '.modify-composer',
+      composerInput: '.modify-composer textarea',
+      userBubble: '.modify-user-bubble',
+      assistantFooter: '.modify-assistant-footer',
+      assistantAction: '.modify-assistant-footer .modify-message-action',
+      thinking: '.modify-thinking',
+      thinkingSummary: '.modify-thinking > summary',
+      thinkingBody: '.modify-thinking-body',
+      workLog: '.modify-work-log',
+      workSummary: '.modify-work-log > summary',
+      workBody: '.modify-work-body',
+      editedFiles: '.modify-edited-files',
+      editedFile: '.modify-edited-file'
+    })
+
+    expect(modify).toEqual(main)
+    await expect(page.locator('.modify-composer')).toHaveCSS('background-color', 'rgba(255, 255, 255, 0.035)')
+  })
+
+  test('modify rail renders assistant markdown like the main composer', async ({ page }) => {
+    const markdown =
+      '# Title\n\n' +
+      'Paragraph with `inline` code and **bold** text.\n\n' +
+      '- one\n- two\n\n' +
+      '1. first\n2. second\n\n' +
+      '> quoted line\n\n' +
+      '| Name | Value |\n| --- | --- |\n| alpha | `one` |\n\n' +
+      '<div align="center"><a href="https://example.com">center link</a></div>\n\n' +
+      '---\n\n' +
+      '```ts theme={null} const value = 1\nconsole.log(value)\n```'
+
+    const collectMarkdown = async (selector: string) =>
+      page.locator(selector).last().evaluate((element) => {
+        const classSignature = Array.from(element.querySelectorAll('*')).map((node) => ({
+          tag: node.tagName.toLowerCase(),
+          className: node.getAttribute('class') ?? '',
+          text: (node.textContent ?? '').replace(/\s+/g, ' ').trim()
+        }))
+        const style = (target: string, prop: string): string => {
+          const found = element.querySelector(target)
+          return found ? getComputedStyle(found).getPropertyValue(prop) : ''
+        }
+        return {
+          classSignature,
+          body: {
+            display: getComputedStyle(element).display,
+            gap: getComputedStyle(element).gap,
+            fontSize: getComputedStyle(element).fontSize,
+            lineHeight: getComputedStyle(element).lineHeight,
+            displayColor: Boolean(getComputedStyle(element).color)
+          },
+          code: {
+            fontSize: style('.md-code-pre', 'font-size'),
+            lineHeight: style('.md-code-pre', 'line-height'),
+            paddingTop: style('.md-code-pre', 'padding-top'),
+            borderRadius: style('.md-code', 'border-radius')
+          },
+          table: {
+            fontSize: style('.md-table', 'font-size'),
+            lineHeight: style('.md-table', 'line-height'),
+            cellPadding: style('.md-table td', 'padding-left')
+          }
+        }
+      })
+
+    await page.goto('/preview.html')
+    await page.getByTestId('composer-input').fill('Render markdown')
+    await page.getByTestId('send-button').click()
+    await page.evaluate((text) => {
+      const emit = (window as typeof window & { __emitEngineEvent?: (event: AgentEvent) => void }).__emitEngineEvent
+      emit?.({ kind: 'text', text })
+      emit?.({ kind: 'result', ok: true })
+    }, markdown)
+    const main = await collectMarkdown('.y-assistant .md-body')
+
+    await page.goto('/preview.html?mode=modify')
+    await page.locator('[data-testid="modify-composer"] textarea').fill('Render markdown')
+    await page.getByRole('button', { name: 'Send' }).click()
+    await page.evaluate((text) => {
+      const emit = (window as typeof window & { __emitEngineEvent?: (event: AgentEvent) => void }).__emitEngineEvent
+      emit?.({ kind: 'text', text })
+      emit?.({ kind: 'result', ok: true })
+    }, markdown)
+    const modify = await collectMarkdown('.modify-assistant-message .md-body')
+
+    expect(modify.classSignature).toEqual(main.classSignature)
+    expect(modify.body).toEqual(main.body)
+    expect(modify.code).toEqual(main.code)
+    expect(modify.table).toEqual(main.table)
+    await expect(page.locator('.modify-assistant-message .md-code').last()).toHaveCSS('background-color', 'rgb(17, 18, 20)')
   })
 })

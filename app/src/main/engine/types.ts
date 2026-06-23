@@ -37,6 +37,7 @@ export interface EngineCommandResult {
   ok: boolean
   message?: string
   value?: string
+  status?: string
   error?: string
 }
 

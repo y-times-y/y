@@ -5,7 +5,7 @@ import { loadEngineLogoDataUrl } from './logos'
 
 type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
-export type ModelInfo = { id: string; label: string }
+export type ModelInfo = { id: string; label: string; contextWindow?: number }
 
 export type EngineModelCatalog = {
   engine: string
@@ -29,31 +29,36 @@ const EFFORT_LABELS: Record<Effort, string> = {
 }
 
 const CLAUDE_BASE_MODELS = [
-  { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', efforts: ['low', 'medium', 'high', 'xhigh'] },
-  { id: 'claude-opus-4-8', label: 'Opus 4.8', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
-  { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5', efforts: ['low', 'medium', 'high'] }
-] satisfies Array<{ id: string; label: string; efforts: Effort[] }>
+  { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', contextWindow: 200_000, efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+  { id: 'claude-sonnet-4-6[1m]', label: 'Sonnet 4.6', contextWindow: 1_000_000, efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+  { id: 'claude-opus-4-8', label: 'Opus 4.8', contextWindow: 1_000_000, efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+  { id: 'claude-opus-4-8[1m]', label: 'Opus 4.8', contextWindow: 1_000_000, efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+  { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5', contextWindow: 200_000, efforts: ['low', 'medium', 'high', 'xhigh', 'max'] }
+] satisfies Array<{ id: string; label: string; contextWindow?: number; efforts: Effort[] }>
 
 const CODEX_FALLBACK_BASE = [
   {
     id: 'gpt-5.5',
     label: 'GPT-5.5',
+    contextWindow: 372_000,
     defaultEffort: 'medium',
     efforts: ['low', 'medium', 'high', 'xhigh']
   },
   {
     id: 'gpt-5.4',
     label: 'GPT-5.4',
+    contextWindow: 272_000,
     defaultEffort: 'xhigh',
     efforts: ['low', 'medium', 'high', 'xhigh']
   },
   {
     id: 'gpt-5.4-mini',
     label: 'GPT-5.4 Mini',
+    contextWindow: 272_000,
     defaultEffort: 'medium',
     efforts: ['low', 'medium', 'high', 'xhigh']
   }
-] satisfies Array<{ id: string; label: string; defaultEffort: Effort; efforts: Effort[] }>
+] satisfies Array<{ id: string; label: string; contextWindow?: number; defaultEffort: Effort; efforts: Effort[] }>
 
 const CODEX_SKIP = new Set(['codex-auto-review'])
 
@@ -62,7 +67,7 @@ function withEffort(id: string, effort: Effort): string {
 }
 
 function effortModels(
-  models: Array<{ id: string; label: string; defaultEffort?: Effort; efforts: Effort[] }>
+  models: Array<{ id: string; label: string; contextWindow?: number; defaultEffort?: Effort; efforts: Effort[] }>
 ): ModelInfo[] {
   const out: ModelInfo[] = []
   for (const model of models) {
@@ -72,7 +77,8 @@ function effortModels(
     for (const effort of ordered) {
       out.push({
         id: withEffort(model.id, effort),
-        label: `${model.label} · ${EFFORT_LABELS[effort]}`
+        label: `${model.label} · ${EFFORT_LABELS[effort]}`,
+        contextWindow: model.contextWindow
       })
     }
   }
@@ -103,6 +109,7 @@ type CodexModelCache = {
     slug?: string
     display_name?: string
     visibility?: string
+    context_window?: number
     default_reasoning_level?: string
     supported_reasoning_levels?: Array<{ effort?: string; description?: string }>
   }>
@@ -121,6 +128,9 @@ function loadCodexModels(): ModelInfo[] {
         return {
           id: m.slug as string,
           label: m.display_name || (m.slug as string),
+          contextWindow: typeof m.context_window === 'number'
+            ? m.context_window
+            : fallback?.contextWindow,
           defaultEffort: isEffort(m.default_reasoning_level)
             ? m.default_reasoning_level
             : (fallback?.defaultEffort ?? efforts[0]),

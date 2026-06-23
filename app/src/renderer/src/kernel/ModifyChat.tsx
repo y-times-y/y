@@ -1,15 +1,100 @@
 import * as React from 'react'
-import { latestVerdict, decideVerify } from './userlandStatus'
-import { MarkdownBody } from './markdown'
+import { latestVerdict, decideVerify, publishAgentWorking } from './userlandStatus'
 import { defaultRunOptions } from './EngineOptionsPicker'
-import { ModifyChevronIcon, ModifyCopyIcon, ModifyMark, ModifyMenuIcon, ModifyResetIcon, ModifySendIcon, ModifyStopIcon } from './ModifyIcons'
-import { ToolActivity, diffStat, settleTools, toolVerbFromName } from './ToolActivity'
+import {
+  CHAT_SURFACE_CLASSES,
+  ChatAssistantMessage,
+  ChatComposerShell,
+  ChatEditedFilesSummary,
+  ChatThinkingBlock,
+  ChatToolMessage,
+  ChatUserMessage,
+  ChatWorkSummary,
+  chatWorkHasCollapsibleTool,
+  type ChatWorkEntry
+} from './ChatPrimitives'
+import {
+  ModifyHistoryIcon,
+  ModifyMark,
+  ModifyNewIcon,
+  ModifyResetIcon,
+  ModifySendIcon,
+  ModifyStopIcon,
+  ModifyXIcon
+} from './ModifyIcons'
+import { settleTools, toolVerbFromName } from './ToolActivity'
 import type { Msg } from './modifyTypes'
 
 const MAX_AUTO_RETRIES = 3
 const VERIFY_DELAY_MS = 1200
+const STREAM_MIN_CHARS = 360
+const STREAM_MAX_CHARS = 1400
+const STREAM_MAX_HOLD_MS = 1400
+const STREAM_FLUSH_MS = 180
+const MODIFY_BINARY_SPINNER_DIGITS = ['1', '0', '1', '0', '1', '0', '1', '0', '1']
+const MODIFY_BINARY_SPINNER_POSITIONS = [
+  { x: 0, y: 0 },
+  { x: 8, y: 0 },
+  { x: 16, y: 0 },
+  { x: 0, y: 8 },
+  { x: 8, y: 8 },
+  { x: 16, y: 8 },
+  { x: 0, y: 16 },
+  { x: 8, y: 16 },
+  { x: 16, y: 16 }
+]
+const MODIFY_BINARY_SPINNER_ROUTES = [
+  [0, 1, 2, 5, 8, 7, 6, 3, 4],
+  [2, 5, 8, 7, 6, 3, 0, 1, 4],
+  [8, 7, 6, 3, 0, 1, 2, 5, 4],
+  [6, 3, 0, 1, 2, 5, 8, 7, 4]
+]
+const MODIFY_BINARY_ROUTE_LENGTH = MODIFY_BINARY_SPINNER_ROUTES[0].length
+const MODIFY_BINARY_RESET_STEPS = 4
+const MODIFY_BINARY_CYCLE_LENGTH = MODIFY_BINARY_ROUTE_LENGTH + MODIFY_BINARY_RESET_STEPS
+const MODIFY_BINARY_TOTAL_STEPS = MODIFY_BINARY_SPINNER_ROUTES.length * MODIFY_BINARY_CYCLE_LENGTH
+const MODIFY_BINARY_STEP_MS = 125
 
-const LABELS: Record<string, string> = { 'claude-code': 'Claude Code', codex: 'Codex' }
+function currentModifyBinaryTick(): number {
+  return Math.floor(Date.now() / MODIFY_BINARY_STEP_MS) % MODIFY_BINARY_TOTAL_STEPS
+}
+
+function ModifyBinarySpinner() {
+  const [tick, setTick] = React.useState(currentModifyBinaryTick)
+  React.useEffect(() => {
+    const id = window.setInterval(() => setTick(currentModifyBinaryTick()), MODIFY_BINARY_STEP_MS)
+    return () => window.clearInterval(id)
+  }, [])
+  const phase = tick % MODIFY_BINARY_CYCLE_LENGTH
+  const routeIndex = Math.floor(tick / MODIFY_BINARY_CYCLE_LENGTH) % MODIFY_BINARY_SPINNER_ROUTES.length
+  const route = MODIFY_BINARY_SPINNER_ROUTES[routeIndex]
+  const resetting = phase >= MODIFY_BINARY_ROUTE_LENGTH
+  const activeIndex = route[Math.min(phase, MODIFY_BINARY_ROUTE_LENGTH - 1)]
+  const activePosition = MODIFY_BINARY_SPINNER_POSITIONS[activeIndex]
+  return (
+    <span className={'modify-binary-spinner' + (resetting ? ' is-resetting' : '')} aria-label="Streaming">
+      <span
+        className="modify-binary-glow"
+        aria-hidden
+        style={{ transform: `translate(${activePosition.x}px, ${activePosition.y}px)` }}
+      />
+      {MODIFY_BINARY_SPINNER_DIGITS.map((digit, index) => (
+        <span key={index} className={'modify-binary-cell cell-' + (index + 1) + (index === activeIndex ? ' active' : '')}>{digit}</span>
+      ))}
+    </span>
+  )
+}
+
+type KernelEngineApi = Window['y']['engine'] & {
+  startModify: (args: { engine: string; model?: string; options?: EngineRunOptions }) => Promise<StartResult>
+}
+
+type RevertGraphState = {
+  open: boolean
+  loading: boolean
+  error: string
+  entries: SnapshotEntry[]
+}
 
 const PREAMBLE =
   'You are the Modify agent for an app called y. Your working directory contains ' +
@@ -20,8 +105,25 @@ const PREAMBLE =
   'is on the global `window.y`. Available capability bricks (each prompts the user for ' +
   'consent the first time): window.y.net.request({url,method,headers,body}) -> ' +
   '{ok,status,body} for network/APIs; window.y.files.{list,read,write,mkdir,remove}(path) ' +
-  'for a private workspace folder; and the <webview src=…> tag is enabled for embedding ' +
-  'web pages (e.g. to build a browser). Prefer small, focused edits. Request:\n\n'
+  'for a private workspace folder; window.y.terminal.{start,write,resize,kill,onEvent} for ' +
+  'building real PTY-backed terminal UI; and the <webview src=…> tag is enabled for embedding ' +
+  'web pages (e.g. to build a browser). Terminal safety skill: use terminal commands only when ' +
+  'they are needed for the requested customization or for inspecting behavior. Do not use the ' +
+  'terminal to edit y Kernel, Modify, auth, analytics, preload, main-process, or app source files ' +
+  'unless the user explicitly asks for that protected-code change. Destructive commands such as ' +
+  'rm, mv, chmod, git reset, or shell redirection are allowed only when the target is clearly inside ' +
+  'the private workspace or another user-approved non-Kernel project path. If a requested product brick is missing, ' +
+  'use curl or another shell HTTP client to POST only enum JSON to https://ytimesy.com/api/brick-requests with brick, reason, surface, confidence, and engineId. ' +
+  'Allowed brick values: browser, file_editor, terminal, database, github, figma, web_search, auth, analytics, deployment, unknown. ' +
+  'Allowed reason values: needs_external_page_interaction, needs_project_file_access, needs_shell_execution, needs_remote_repo_context, needs_design_asset_access, needs_live_web_lookup, needs_user_identity, needs_product_event_tracking, needs_hosting_or_release, other. ' +
+  'Allowed surface values: modify. Allowed confidence values: low, medium, high. Allowed engineId values: claude-code, codex. For Figma file/design inspection use brick=figma and reason=needs_design_asset_access. ' +
+  'Never include prompts, code, paths, URLs, screenshots, terminal output, or free-form user content in the report. ' +
+  'Prefer small, focused edits. Request:\n\n'
+
+type StreamBuffer = {
+  text: string
+  firstAt: number
+}
 
 function thinkingId(): string {
   return `think-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -48,9 +150,49 @@ function append(list: Msg[], chunk: string): Msg[] {
   const base = settleTools(sealed)
   const prev = base[base.length - 1]
   if (prev && prev.role === 'assistant') {
-    return base.slice(0, -1).concat([{ role: 'assistant', text: prev.text + chunk }])
+    return base.slice(0, -1).concat([{ ...prev, text: prev.text + chunk, streaming: true }])
   }
-  return base.concat([{ role: 'assistant', text: chunk }])
+  return base.concat([{ role: 'assistant', text: chunk, streaming: true }])
+}
+
+function unstableMarkdownTailStart(text: string): number {
+  let start = text.length
+  const checks = [
+    /```[^`\n]*$/u,
+    /!?\[[^\]\n]*$/u,
+    /\]\([^\)\n]*$/u,
+    /`[^`\n]*$/u,
+    /\*\*[^*\n]*$/u
+  ]
+  for (const pattern of checks) {
+    const match = pattern.exec(text)
+    if (match && match.index < start) start = match.index
+  }
+  return start
+}
+
+function streamBoundary(text: string, minIndex: number, maxIndex: number): number {
+  const limited = text.slice(0, maxIndex)
+  const preferred = ['\n\n', '\n', '. ', '! ', '? ', '; ']
+  for (const token of preferred) {
+    const index = limited.lastIndexOf(token)
+    if (index >= minIndex) return index + token.length
+  }
+  return maxIndex
+}
+
+function splitVisibleStreamText(buffer: StreamBuffer, force = false): { visible: string; rest: string } {
+  if (force) return { visible: buffer.text, rest: '' }
+  const stableEnd = unstableMarkdownTailStart(buffer.text)
+  const stable = buffer.text.slice(0, stableEnd)
+  if (!stable) return { visible: '', rest: buffer.text }
+  const age = Date.now() - buffer.firstAt
+  const canShowShort = age >= STREAM_MAX_HOLD_MS || /[.!?]\s$|\n$/u.test(stable)
+  if (stable.length < STREAM_MIN_CHARS && !canShowShort) return { visible: '', rest: buffer.text }
+  const maxIndex = Math.min(stable.length, STREAM_MAX_CHARS)
+  const minIndex = canShowShort ? 1 : STREAM_MIN_CHARS
+  const boundary = streamBoundary(stable, minIndex, maxIndex)
+  return { visible: buffer.text.slice(0, boundary), rest: buffer.text.slice(boundary) }
 }
 
 function appendThinking(list: Msg[], chunk: string): Msg[] {
@@ -69,36 +211,10 @@ function normalizeToolTarget(target?: string): string {
   return p.split('/').pop() || p
 }
 
-function parseModelId(id: string): { base: string; effort: string } {
-  const i = id.indexOf('#effort=')
-  return i === -1 ? { base: id, effort: 'medium' } : { base: id.slice(0, i), effort: id.slice(i + 8) }
-}
-
-function buildModelId(base: string, effort: string): string {
-  return `${base}#effort=${effort}`
-}
-
-const SLASH_HELP = 'Commands: /fast, /effort <low|medium|high|xhigh|max>, /reasoning <level>, /goal <text>, /goal clear, /clear, /help.'
-const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
-const MODIFY_SLASH_COMMANDS = [
-  { name: '/fast', detail: 'switch to low reasoning effort' },
-  { name: '/effort', detail: 'set reasoning effort' },
-  { name: '/reasoning', detail: 'set reasoning level' },
-  { name: '/goal', detail: 'set or clear the Modify goal' },
-  { name: '/clear', detail: 'restart the Modify session' },
-  { name: '/help', detail: 'show Modify commands' }
-]
-
 type QueuedFollowUp = {
   id: string
   text: string
   steer: boolean
-}
-
-function catalogEfforts(catalog: EngineModelCatalog[], engineId: string, base: string): Array<{ id: string; label: string }> {
-  return (catalog.find((c) => c.engine === engineId)?.models ?? [])
-    .filter((m) => m.id.startsWith(base + '#effort='))
-    .map((m) => ({ id: m.id.slice(m.id.indexOf('#effort=') + 8), label: m.label.split(' · ')[1] ?? m.id }))
 }
 
 function langFromTarget(target?: string): string {
@@ -228,6 +344,18 @@ function finishStreaming(list: Msg[]): Msg[] {
   return settleTools(sealAllThinking(list))
 }
 
+function finishInterrupted(list: Msg[], durationMs?: number, checkpointId?: string): Msg[] {
+  const base = finishStreaming(list)
+  const lastAssistantIndex = base.findLastIndex((message) => message.role === 'assistant')
+  if (lastAssistantIndex !== -1) {
+    const next = base.slice()
+    const message = next[lastAssistantIndex]
+    if (message.role === 'assistant') next[lastAssistantIndex] = { ...message, checkpointId: checkpointId ?? message.checkpointId, durationMs, interrupted: true }
+    return next
+  }
+  return base.concat([{ role: 'assistant', text: 'Interrupted.', checkpointId, durationMs, interrupted: true }])
+}
+
 function retainedContext(list: Msg[]): string {
   return list
     .filter((message) => message.role === 'user' || message.role === 'assistant')
@@ -250,88 +378,46 @@ function formatLiveDuration(durationMs: number): string {
   return minutes ? `${minutes}m ${seconds}s` : `${seconds}s`
 }
 
-function isEditableToolMessage(message: Msg): message is Extract<Msg, { role: 'tool' }> {
-  if (message.role !== 'tool' || message.system) return false
-  const verb = (message.verb || toolVerbFromName(message.name || 'tool')).toLowerCase()
-  return verb === 'edit' || verb === 'write'
-}
-
-function hasCollapsibleWork(work: Array<{ message: Msg; index: number }>): boolean {
-  return work.some(({ message }) => message.role === 'tool' && !message.system)
-}
-
-function ModifyToolActivity({ message }: { message: Extract<Msg, { role: 'tool' }> }): React.JSX.Element {
-  const verb = message.verb || toolVerbFromName(message.name)
-  return (
-    <ToolActivity
-      verb={verb}
-      target={message.target}
-      body={message.body}
-      live={message.streaming}
-      lang={langFromTarget(message.target)}
-    />
+function modifyTitleFromMessages(messages: Msg[]): string {
+  const firstUser = messages.find(
+    (message): message is Extract<Msg, { role: 'user' }> =>
+      message.role === 'user' && Boolean(message.text?.trim())
   )
+  const text = firstUser?.text?.trim().replace(/\s+/g, ' ') ?? ''
+  if (!text) return 'New Modify chat'
+  return text.length > 44 ? `${text.slice(0, 44)}...` : text
 }
 
-function ModifyThinkingBlock({ message }: { message: Extract<Msg, { role: 'thinking' }> }): React.JSX.Element {
-  return (
-    <details className="modify-thinking" open={message.streaming ? true : undefined} data-testid="thinking-block">
-      <summary>
-        <span>Thinking</span>
-        <ModifyChevronIcon size={12} />
-      </summary>
-      <div className="modify-thinking-body">{message.text}</div>
-    </details>
-  )
+function formatModifyChatAge(value: string): string {
+  const time = new Date(value).getTime()
+  if (!Number.isFinite(time)) return ''
+  const diff = Math.max(0, Date.now() - time)
+  const minute = 60_000
+  const hour = minute * 60
+  const day = hour * 24
+  if (diff < minute) return 'now'
+  if (diff < hour) return `${Math.floor(diff / minute)}m`
+  if (diff < day) return `${Math.floor(diff / hour)}h`
+  return `${Math.floor(diff / day)}d`
 }
 
-function ModifyWorkSummary({ work, durationMs, interrupted }: { work: Array<{ message: Msg; index: number }>; durationMs?: number; interrupted?: boolean }): React.JSX.Element {
-  return (
-    <details className="modify-work-log" data-testid="modify-work-log">
-      <summary><span>{interrupted ? 'Interrupted after' : 'Worked for'} {formatDuration(durationMs)}</span><ModifyChevronIcon size={12} /></summary>
-      <div className="modify-work-body">
-        {work.map(({ message, index }) => {
-          if (message.role === 'assistant') return <div key={index} className="modify-work-narration"><MarkdownBody text={message.text ?? ''} /></div>
-          if (message.role === 'thinking') return <ModifyThinkingBlock key={index} message={message} />
-          if (message.role === 'tool') return message.system ? <div key={index} className="modify-tool-note">{message.name}</div> : <ModifyToolActivity key={index} message={message} />
-          return null
-        })}
-      </div>
-    </details>
-  )
+function trackModifyEvent(event: string, props?: Record<string, unknown>): void {
+  void window.y.analytics.track(event, props)
 }
 
-function ModifyEditedFilesSummary({ work }: { work: Array<{ message: Msg; index: number }> }): React.JSX.Element | null {
-  const edited = new Map<string, { added: number; removed: number }>()
-  for (const entry of work) {
-    if (!isEditableToolMessage(entry.message) || !entry.message.target) continue
-    const stat = diffStat(entry.message.body) ?? { added: 0, removed: 0 }
-    const current = edited.get(entry.message.target) ?? { added: 0, removed: 0 }
-    edited.set(entry.message.target, { added: current.added + stat.added, removed: current.removed + stat.removed })
-  }
-  if (!edited.size) return null
-  const totals = Array.from(edited.values()).reduce(
-    (sum, stat) => ({ added: sum.added + stat.added, removed: sum.removed + stat.removed }),
-    { added: 0, removed: 0 }
-  )
+function isNoisyModifyStatus(value: string): boolean {
+  const normalized = value.trim().toLowerCase()
   return (
-    <div className="modify-edited-files" data-testid="modify-edited-files">
-      <div className="modify-edited-files-head">
-        <strong>Edited {edited.size} {edited.size === 1 ? 'file' : 'files'}</strong>
-        <span><b>+{totals.added}</b> <i>-{totals.removed}</i></span>
-      </div>
-      {Array.from(edited).map(([file, stat]) => (
-        <div key={file} className="modify-edited-file">
-          <span>{file}</span>
-          <span><b>+{stat.added}</b> <i>-{stat.removed}</i></span>
-        </div>
-      ))}
-    </div>
+    !normalized ||
+    normalized === '...' ||
+    normalized === 'requesting' ||
+    normalized === 'requesting...' ||
+    normalized === 'reasoning' ||
+    normalized === 'codex turn started'
   )
 }
 
 function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
-  const [engines, setEngines] = React.useState<string[]>([])
   const [catalog, setCatalog] = React.useState<EngineModelCatalog[]>([])
   const [engineId, setEngineId] = React.useState('claude-code')
   const [modelId, setModelId] = React.useState('claude-sonnet-4-6#effort=medium')
@@ -339,7 +425,10 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
   const [goal, setGoal] = React.useState('')
   const [sessionId, setSessionId] = React.useState<string | null>(null)
   const [messages, setMessages] = React.useState<Msg[]>([])
-  const [inputValue, setInputValue] = React.useState('')
+  const [modifyChats, setModifyChats] = React.useState<ModifyChatRecord[]>([])
+  const [activeModifyChatId, setActiveModifyChatId] = React.useState<string | null>(null)
+  const [historyOpen, setHistoryOpen] = React.useState(false)
+  const [modifyReady, setModifyReady] = React.useState(false)
   const [hasComposerInput, setHasComposerInput] = React.useState(false)
   const [queuedFollowUps, setQueuedFollowUps] = React.useState<QueuedFollowUp[]>([])
   const [busy, setBusy] = React.useState(false)
@@ -347,16 +436,29 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
   const [status, setStatus] = React.useState('')
   const [error, setError] = React.useState('')
   const [editingMessage, setEditingMessage] = React.useState<{ index: number; text: string } | null>(null)
+  const [revertGraph, setRevertGraph] = React.useState<RevertGraphState>({
+    open: false,
+    loading: false,
+    error: '',
+    entries: []
+  })
   const sidRef = React.useRef<string | null>(null)
   const messagesRef = React.useRef<Msg[]>([])
+  const activeModifyChatIdRef = React.useRef<string | null>(null)
+  const modifyPersistTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
   const queuedFollowUpsRef = React.useRef<QueuedFollowUp[]>([])
   const inputRef = React.useRef<HTMLTextAreaElement | null>(null)
   const inputValueRef = React.useRef('')
   const hasComposerInputRef = React.useRef(false)
   const appStateRef = React.useRef<AppState | null>(null)
   const activeConfigKeyRef = React.useRef('')
+  const pendingMainConfigRef = React.useRef<{
+    config: { engineId: string; modelId: string; runOptions: EngineRunOptions; goal: string }
+    keepMessages: boolean
+  } | null>(null)
   const firstTurnRef = React.useRef(true)
   const turnStartAtRef = React.useRef(0)
+  const activeRequestRef = React.useRef('')
   const lastTurnDurationRef = React.useRef<number | undefined>(undefined)
   const retriesRef = React.useRef(0)
   const verifyTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -368,16 +470,25 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
     >
   >([])
   const streamRafRef = React.useRef<number | null>(null)
-  const pendingAssistantTextRef = React.useRef('')
+  const streamTimerRef = React.useRef<number | null>(null)
+  const streamBufferRef = React.useRef<StreamBuffer | null>(null)
 
   messagesRef.current = messages
+  activeModifyChatIdRef.current = activeModifyChatId
   queuedFollowUpsRef.current = queuedFollowUps
+  const busyRef = React.useRef(busy)
+  busyRef.current = busy
 
   React.useEffect(() => {
     if (!busy) return
     setElapsedTick(Date.now())
     const id = window.setInterval(() => setElapsedTick(Date.now()), 1000)
     return () => window.clearInterval(id)
+  }, [busy])
+
+  React.useEffect(() => {
+    publishAgentWorking(busy)
+    return () => publishAgentWorking(false)
   }, [busy])
 
   const composerValue = (): string => inputRef.current?.value ?? inputValueRef.current
@@ -395,7 +506,6 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
       const hasValue = Boolean(value.trim())
       hasComposerInputRef.current = hasValue
       setHasComposerInput(hasValue)
-      setInputValue(value.trimStart().startsWith('/') ? value : '')
       requestAnimationFrame(() => resizeComposer())
     },
     [resizeComposer]
@@ -410,8 +520,6 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
         hasComposerInputRef.current = hasValue
         setHasComposerInput(hasValue)
       }
-      const suggestionValue = value.trimStart().startsWith('/') ? value : ''
-      setInputValue((current) => (current === suggestionValue ? current : suggestionValue))
     },
     [resizeComposer]
   )
@@ -447,21 +555,50 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
 
   const scrollLogToEnd = React.useCallback((): void => {
     requestAnimationFrame(() => {
-      const el = logRef.current
-      if (el) el.scrollTop = el.scrollHeight
+      requestAnimationFrame(() => {
+        const el = logRef.current
+        if (el) el.scrollTop = el.scrollHeight
+      })
     })
   }, [])
 
-  const flushAssistantText = React.useCallback((): void => {
-    const text = pendingAssistantTextRef.current
-    if (!text) return
-    pendingAssistantTextRef.current = ''
+  React.useEffect(() => {
+    scrollLogToEnd()
+  }, [busy, error, messages, scrollLogToEnd, status])
+
+  const flushStreamBuffer = React.useCallback((force = false): void => {
+    if (streamTimerRef.current != null) {
+      window.clearTimeout(streamTimerRef.current)
+      streamTimerRef.current = null
+    }
+    const buffered = streamBufferRef.current
+    if (!buffered) return
+    streamBufferRef.current = null
+    const nextText = splitVisibleStreamText(buffered, force)
+    if (!nextText.visible && !nextText.rest) return
     setMessages((m) => {
-      const next = append(m, text)
+      const next = nextText.visible ? append(m, nextText.visible) : m
       messagesRef.current = next
       return next
     })
+    if (nextText.rest) {
+      streamBufferRef.current = {
+        text: nextText.rest,
+        firstAt: nextText.visible ? Date.now() : buffered.firstAt
+      }
+      streamTimerRef.current = window.setTimeout(() => flushStreamBuffer(false), STREAM_FLUSH_MS)
+    }
   }, [])
+
+  const queueStreamText = React.useCallback((text: string): void => {
+    if (streamTimerRef.current != null) window.clearTimeout(streamTimerRef.current)
+    const buffered = streamBufferRef.current
+    streamBufferRef.current = {
+      text: (buffered?.text ?? '') + text,
+      firstAt: buffered?.firstAt ?? Date.now()
+    }
+    streamTimerRef.current = window.setTimeout(() => flushStreamBuffer(false), STREAM_FLUSH_MS)
+  }, [flushStreamBuffer])
 
   const catalogRef = React.useRef(catalog)
   catalogRef.current = catalog
@@ -475,24 +612,6 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
       runOptions: config.runOptions,
       goal: config.goal
     })
-  }
-
-  function persistActiveChatPatch(patch: { modelId?: string; goal?: string }): void {
-    const state = appStateRef.current
-    const projectId = state?.activeProjectId
-    const chatId = state?.activeChatId
-    if (!projectId || !chatId) return
-    void window.y.app.updateChat(projectId, chatId, patch)
-  }
-
-  function syncFromMainChat(state: AppState, cat = catalogRef.current, keepMessages = true): void {
-    appStateRef.current = state
-    const config = activeChatConfig(state, cat)
-    const nextKey = configKey(config)
-    if (nextKey === activeConfigKeyRef.current) return
-    activeConfigKeyRef.current = nextKey
-    setGoal(config.goal)
-    void start(config.engineId, config.modelId, config.runOptions, keepMessages)
   }
 
   function updateQueuedFollowUps(updater: (items: QueuedFollowUp[]) => QueuedFollowUp[]): void {
@@ -576,7 +695,7 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
     setStatus('')
     setError('')
     setBusy(false)
-    const res = await window.y.engine.startModify({ engine: id, model: resolved, options })
+    const res = await (window.y.engine as KernelEngineApi).startModify({ engine: id, model: resolved, options })
     if (!res.ok || !res.sessionId) {
       setError(res.error || 'Failed to start the Modify engine')
       return null
@@ -585,6 +704,163 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
     setSessionId(res.sessionId)
     return res.sessionId
   }, [])
+
+  function syncFromMainChat(state: AppState, cat = catalogRef.current, keepMessages = true): void {
+    appStateRef.current = state
+    const config = activeChatConfig(state, cat)
+    const nextKey = configKey(config)
+    if (nextKey === activeConfigKeyRef.current) return
+    if (busyRef.current) {
+      pendingMainConfigRef.current = { config, keepMessages }
+      return
+    }
+    pendingMainConfigRef.current = null
+    activeConfigKeyRef.current = nextKey
+    setGoal(config.goal)
+    void start(config.engineId, config.modelId, config.runOptions, keepMessages)
+  }
+
+  React.useEffect(() => {
+    if (busy) return
+    const pending = pendingMainConfigRef.current
+    if (!pending) return
+    pendingMainConfigRef.current = null
+    activeConfigKeyRef.current = configKey(pending.config)
+    setGoal(pending.config.goal)
+    void start(pending.config.engineId, pending.config.modelId, pending.config.runOptions, pending.keepMessages)
+  }, [busy, start])
+
+  function configForModifyChat(chat: ModifyChatRecord, cat = catalogRef.current): {
+    engineId: string
+    modelId: string
+    runOptions: EngineRunOptions
+  } {
+    const fallback = appStateRef.current
+      ? activeChatConfig(appStateRef.current, cat)
+      : { engineId, modelId, runOptions, goal }
+    return {
+      engineId: chat.engineId || fallback.engineId,
+      modelId: chat.modelId || fallback.modelId,
+      runOptions: chat.runOptions || fallback.runOptions
+    }
+  }
+
+  function applyModifyChat(chat: ModifyChatRecord, cat = catalogRef.current): void {
+    const config = configForModifyChat(chat, cat)
+    const nextGoal = appStateRef.current ? activeChatConfig(appStateRef.current, cat).goal : goal
+    setActiveModifyChatId(chat.id)
+    activeModifyChatIdRef.current = chat.id
+    setMessages((chat.messages ?? []) as Msg[])
+    messagesRef.current = (chat.messages ?? []) as Msg[]
+    updateQueuedFollowUps(() => [])
+    setEditingMessage(null)
+    setHistoryOpen(false)
+    setError('')
+    setGoal(nextGoal)
+    activeConfigKeyRef.current = configKey({ ...config, goal: nextGoal })
+    void start(config.engineId, config.modelId, config.runOptions, true)
+    setModifyReady(true)
+  }
+
+  async function persistActiveModifyChatNow(): Promise<void> {
+    const chatId = activeModifyChatIdRef.current
+    if (!chatId) return
+    const currentMessages = finishStreaming(messagesRef.current)
+    const title = modifyTitleFromMessages(currentMessages)
+    const patch = { title, messages: currentMessages, engineId, modelId, runOptions }
+    setModifyChats((items) =>
+      items.map((item) =>
+        item.id === chatId
+          ? { ...item, ...patch, updatedAt: new Date().toISOString() }
+          : item
+      )
+    )
+    const result = await window.y.app.updateModifyChat(chatId, patch)
+    if (result.ok && result.chats) setModifyChats(result.chats)
+  }
+
+  async function createModifyChat(): Promise<void> {
+    if (busy) return setError('Wait until the current Modify turn finishes before opening a new Modify chat.')
+    await persistActiveModifyChatNow()
+    const fallback = appStateRef.current ? activeChatConfig(appStateRef.current, catalogRef.current) : { engineId, modelId, runOptions, goal }
+    const result = await window.y.app.createModifyChat({
+      engineId: fallback.engineId,
+      modelId: fallback.modelId,
+      runOptions: fallback.runOptions
+    })
+    if (!result.ok || !result.chat) {
+      setError(result.error || 'Could not create a new Modify chat.')
+      return
+    }
+    trackModifyEvent('modify_new_chat_created', { engineId: fallback.engineId })
+    if (result.chats) setModifyChats(result.chats)
+    applyModifyChat(result.chat, catalogRef.current)
+  }
+
+  async function selectModifyChat(chatId: string): Promise<void> {
+    if (chatId === activeModifyChatIdRef.current) {
+      setHistoryOpen(false)
+      return
+    }
+    if (busy) return setError('Wait until the current Modify turn finishes before switching Modify chats.')
+    await persistActiveModifyChatNow()
+    const result = await window.y.app.setActiveModifyChat(chatId)
+    if (!result.ok || !result.chats) {
+      setError(result.error || 'Could not switch Modify chats.')
+      return
+    }
+    trackModifyEvent('modify_history_chat_selected')
+    setModifyChats(result.chats)
+    const chat = result.chats.find((item) => item.id === result.activeChatId) ?? result.chats.find((item) => item.id === chatId)
+    if (chat) applyModifyChat(chat, catalogRef.current)
+  }
+
+  const openRevertGraph = React.useCallback((): void => {
+    trackModifyEvent('modify_revert_graph_opened')
+    setRevertGraph((current) => ({ ...current, open: true, loading: true, error: '' }))
+    void window.y.userland.history().then((result) => {
+      setRevertGraph((current) => ({
+        ...current,
+        loading: false,
+        error: result.ok ? '' : result.error || 'Could not load Userland history.',
+        entries: result.entries ?? []
+      }))
+    })
+  }, [])
+
+  const closeRevertGraph = React.useCallback((): void => {
+    setRevertGraph((current) => ({ ...current, open: false, error: '' }))
+  }, [])
+
+  const restoreUserlandSnapshot = React.useCallback(
+    async (hash: string): Promise<void> => {
+      if (busy) return
+      const result = await window.y.userland.restoreSnapshot(hash)
+      if (!result.ok) {
+        setRevertGraph((current) => ({ ...current, error: result.error || 'Could not restore that snapshot.' }))
+        return
+      }
+      trackModifyEvent('modify_snapshot_restored', { hash: hash.slice(0, 12) })
+      addSystemNote(`Restored Userland snapshot ${result.hash || hash.slice(0, 7)}.`)
+      closeRevertGraph()
+      await start(engineId, modelId, runOptions, true)
+    },
+    [busy, closeRevertGraph, engineId, modelId, runOptions, start]
+  )
+
+  const resetUserlandToOriginal = React.useCallback(async (): Promise<void> => {
+    if (busy) return
+    if (!window.confirm('Reset y to the original app? This replaces your current customized app.')) return
+    const result = await window.y.userland.resetToSeed()
+    if (!result.ok) {
+      setRevertGraph((current) => ({ ...current, error: result.error || 'Could not reset to the original app.' }))
+      return
+    }
+    trackModifyEvent('modify_reset_original')
+    addSystemNote('Reset Userland to the original app.')
+    closeRevertGraph()
+    await start(engineId, modelId, runOptions, true)
+  }, [busy, closeRevertGraph, engineId, modelId, runOptions, start])
 
   React.useEffect(() => {
     const scheduleVerify = (): void => {
@@ -617,7 +893,9 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
         }
         if (action.kind === 'verified') {
           retriesRef.current = 0
-          void window.y.userland.snapshot().then(() => window.y.userland.checkpoint()).then((checkpoint) => {
+          trackModifyEvent('modify_verified', { durationMs: lastTurnDurationRef.current })
+          const snapshotLabel = `after: ${activeRequestRef.current || 'Modify change'}`
+          void window.y.userland.snapshot(snapshotLabel).then(() => window.y.userland.checkpoint()).then((checkpoint) => {
             setMessages((list) => {
               const next = list.concat([{ role: 'tool' as const, name: action.note, system: true }])
               if (!checkpoint.ok || !checkpoint.checkpointId) {
@@ -646,6 +924,7 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
           return
         }
         retriesRef.current = action.attempt
+        trackModifyEvent('modify_auto_retry', { attempt: action.attempt })
         setMessages((m) => {
           const next = m.concat([{ role: 'tool' as const, name: action.note, system: true }])
           messagesRef.current = next
@@ -662,18 +941,30 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
       if (sid !== sidRef.current) return
       const e = event
       if (e.kind === 'status') {
-        setStatus(e.status)
+        setStatus(isNoisyModifyStatus(e.status) ? '' : e.status)
       } else if (e.kind === 'text') {
         setStatus('')
-        pendingAssistantTextRef.current += e.text
+        queueStreamText(e.text)
       } else if (e.kind === 'thinking') {
         setStatus('')
+        flushStreamBuffer(true)
         enqueueStream({ kind: 'thinking', text: e.text })
       } else if (e.kind === 'tool') {
         setStatus('')
+        flushStreamBuffer(true)
+        if (e.phase === 'start' || e.phase === 'end') {
+          trackModifyEvent('modify_tool_call', {
+            engineId,
+            name: e.name,
+            verb: e.verb,
+            phase: e.phase,
+            hasTarget: Boolean(e.target)
+          })
+        }
         enqueueStream({ kind: 'tool', event: e })
       } else if (e.kind === 'suggestion') {
         setStatus('')
+        flushStreamBuffer(true)
         setMessages((m) => {
           const next = m.concat([{ role: 'tool' as const, name: `Suggested next: ${e.text}`, system: true }])
           messagesRef.current = next
@@ -687,7 +978,7 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
           cancelAnimationFrame(streamRafRef.current)
           flushStreamQueue()
         }
-        flushAssistantText()
+        flushStreamBuffer(true)
         setMessages((m) => {
           const next = finishStreaming(m)
           messagesRef.current = next
@@ -696,7 +987,9 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
         if (!e.ok) {
           setError(e.summary || 'The engine reported an error.')
           retriesRef.current = 0
+          trackModifyEvent('modify_turn_completed', { engineId, ok: false, durationMs: lastTurnDurationRef.current })
         } else {
+          trackModifyEvent('modify_turn_completed', { engineId, ok: true, durationMs: lastTurnDurationRef.current })
           scheduleVerify()
         }
       } else if (e.kind === 'error') {
@@ -706,49 +999,81 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
           cancelAnimationFrame(streamRafRef.current)
           flushStreamQueue()
         }
-        flushAssistantText()
+        flushStreamBuffer(true)
         setMessages((m) => {
           const next = finishStreaming(m)
           messagesRef.current = next
           return next
         })
         setError(e.message)
+        trackModifyEvent('modify_turn_error', { engineId })
       }
     })
     return () => {
       if (verifyTimerRef.current) clearTimeout(verifyTimerRef.current)
       if (streamRafRef.current != null) cancelAnimationFrame(streamRafRef.current)
+      if (streamTimerRef.current != null) window.clearTimeout(streamTimerRef.current)
       off()
     }
-  }, [enqueueStream, flushAssistantText, flushStreamQueue])
+  }, [enqueueStream, flushStreamBuffer, flushStreamQueue, queueStreamText])
 
   React.useEffect(() => {
     let cancelled = false
-    void Promise.all([window.y.engine.list(), window.y.engine.models(), window.y.app.getState()]).then(([ids, cat, state]) => {
+    void Promise.all([window.y.engine.models(), window.y.app.getState(), window.y.app.listModifyChats()]).then(([cat, state, modifyState]) => {
       if (cancelled) return
-      if (ids.length) setEngines(ids)
       setCatalog(cat)
-      syncFromMainChat(state, cat, false)
+      appStateRef.current = state
+      if (!modifyState.ok) {
+        setError(modifyState.error || 'Could not load Modify history.')
+        syncFromMainChat(state, cat, false)
+        return
+      }
+      const chats = modifyState.chats ?? []
+      setModifyChats(chats)
+      const active = chats.find((chat) => chat.id === modifyState.activeChatId) ?? chats[0]
+      if (active) {
+        applyModifyChat(active, cat)
+      } else {
+        syncFromMainChat(state, cat, false)
+      }
     })
     const off = window.y.app.onStateChanged((state) => {
       syncFromMainChat(state, catalogRef.current, true)
     })
     return () => {
       cancelled = true
+      if (modifyPersistTimerRef.current) clearTimeout(modifyPersistTimerRef.current)
       off()
     }
   }, [start])
 
-  const engineLabel = LABELS[engineId] || engineId
-  const pickerCatalog: EngineModelCatalog[] = catalog.length > 0 ? catalog : engines.map((id) => ({
-    engine: id,
-    label: LABELS[id] || id,
-    defaultModel: modelId,
-    models: [{ id: modelId, label: modelId }]
-  }))
-  const slashSuggestions = inputValue.trimStart().startsWith('/')
-    ? MODIFY_SLASH_COMMANDS.filter((item) => item.name.startsWith(inputValue.trim().split(/\s+/)[0] || '/'))
-    : []
+  React.useEffect(() => {
+    if (!modifyReady || !activeModifyChatId) return
+    if (modifyPersistTimerRef.current) clearTimeout(modifyPersistTimerRef.current)
+    const currentMessages = finishStreaming(messages)
+    const title = modifyTitleFromMessages(currentMessages)
+    setModifyChats((items) =>
+      items.map((item) =>
+        item.id === activeModifyChatId
+          ? { ...item, title, messages: currentMessages, engineId, modelId, runOptions, updatedAt: new Date().toISOString() }
+          : item
+      )
+    )
+    modifyPersistTimerRef.current = setTimeout(() => {
+      void window.y.app.updateModifyChat(activeModifyChatId, {
+        title,
+        messages: currentMessages,
+        engineId,
+        modelId,
+        runOptions
+      }).then((result) => {
+        if (result.ok && result.chats) setModifyChats(result.chats)
+      })
+    }, 450)
+    return () => {
+      if (modifyPersistTimerRef.current) clearTimeout(modifyPersistTimerRef.current)
+    }
+  }, [activeModifyChatId, engineId, messages, modelId, modifyReady, runOptions])
 
   const addSystemNote = (text: string): void => {
     setMessages((m) => {
@@ -756,77 +1081,6 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
       messagesRef.current = next
       return next
     })
-  }
-
-  const modelWithEffort = (effort: string): string | null => {
-    const { base } = parseModelId(modelId)
-    const efforts = catalogEfforts(pickerCatalog, engineId, base)
-    if (!efforts.some((item) => item.id === effort)) return null
-    return buildModelId(base, effort)
-  }
-
-  const applyEffortCommand = (effort: string, label: string): boolean => {
-    if (!EFFORTS.includes(effort)) {
-      addSystemNote('Unknown reasoning effort. Use low, medium, high, xhigh, or max.')
-      return true
-    }
-    const nextModel = modelWithEffort(effort)
-    if (!nextModel) {
-      addSystemNote(`${engineLabel} does not expose ${effort} effort for the selected model.`)
-      return true
-    }
-    persistActiveChatPatch({ modelId: nextModel })
-    addSystemNote(`${label}: reasoning effort set to ${effort}.`)
-    return true
-  }
-
-  const clearChat = (): void => {
-    if (sidRef.current) window.y.engine.cancel(sidRef.current)
-    sidRef.current = null
-    firstTurnRef.current = true
-    retriesRef.current = 0
-    setMessages([])
-    messagesRef.current = []
-    updateQueuedFollowUps(() => [])
-    setError('')
-    setStatus('')
-    setBusy(false)
-    void start(engineId, modelId, runOptions)
-  }
-
-  const handleSlashCommand = (text: string): boolean => {
-    if (!text.startsWith('/')) return false
-    const [raw, ...rest] = text.slice(1).trim().split(/\s+/)
-    const cmd = raw.toLowerCase()
-    const arg = rest.join(' ').trim()
-    if (!cmd || cmd === 'help') {
-      addSystemNote(SLASH_HELP)
-      return true
-    }
-    if (cmd === 'fast') return applyEffortCommand('low', 'Fast mode')
-    if (cmd === 'effort' || cmd === 'reasoning') return applyEffortCommand(arg.toLowerCase(), 'Reasoning')
-    if (cmd === 'goal') {
-      if (!arg) {
-        addSystemNote(goal ? `Current goal: ${goal}` : 'No goal is set.')
-        return true
-      }
-      if (['clear', 'off', 'reset'].includes(arg.toLowerCase())) {
-        setGoal('')
-        persistActiveChatPatch({ goal: '' })
-        addSystemNote('Goal cleared.')
-        return true
-      }
-      setGoal(arg)
-      persistActiveChatPatch({ goal: arg })
-      addSystemNote(`Goal set: ${arg}`)
-      return true
-    }
-    if (cmd === 'clear') {
-      clearChat()
-      return true
-    }
-    addSystemNote(`Unknown command /${cmd}. ${SLASH_HELP}`)
-    return true
   }
 
   const sendText = async (text: string, targetSession = sessionId, history = messagesRef.current): Promise<void> => {
@@ -850,12 +1104,25 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
       : request
     firstTurnRef.current = false
     setComposerValue('')
-    pendingAssistantTextRef.current = ''
+    if (streamTimerRef.current != null) window.clearTimeout(streamTimerRef.current)
+    streamBufferRef.current = null
     retriesRef.current = 0
     turnStartAtRef.current = Date.now()
+    activeRequestRef.current = trimmed.slice(0, 120)
     lastTurnDurationRef.current = undefined
+    trackModifyEvent('modify_message_sent', {
+      engineId,
+      modelId,
+      promptLength: trimmed.length,
+      hasGoal: Boolean(goal)
+    })
+    trackModifyEvent('user_active', {
+      surface: 'modify',
+      engineId,
+      hasGoal: Boolean(goal)
+    })
     setBusy(true)
-    setStatus('...')
+    setStatus('')
     scrollLogToEnd()
     void window.y.engine.send(targetSession, toSend)
   }
@@ -865,10 +1132,6 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
     if (!text) return
     if (busy) {
       addQueuedFollowUp(text)
-      return
-    }
-    if (handleSlashCommand(text)) {
-      setComposerValue('')
       return
     }
     void sendText(text)
@@ -901,8 +1164,28 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
     await start(engineId, modelId, runOptions, true)
   }
 
+  const undoTurnEdits = async (assistantIndex: number): Promise<void> => {
+    const userIndex = messages.slice(0, assistantIndex).findLastIndex((message) => message.role === 'user')
+    if (userIndex === -1) return setError('Could not find the message checkpoint before those edits.')
+    const message = messages[userIndex]
+    const checkpointId = message?.role === 'user' ? message.checkpointId : undefined
+    if (!checkpointId) return setError('This turn has no starting code checkpoint, so it cannot undo code safely.')
+    const restored = await window.y.userland.restoreCheckpoint(checkpointId)
+    if (!restored.ok) return setError(restored.error || 'Could not restore the code checkpoint.')
+    const retained = messages.slice(0, userIndex)
+    setMessages(retained)
+    messagesRef.current = retained
+    setEditingMessage(null)
+    await start(engineId, modelId, runOptions, true)
+  }
+
   const copyMessage = (text: string): void => {
-    void navigator.clipboard.writeText(text)
+    const write = window.y?.clipboard?.writeText
+      ? window.y.clipboard.writeText(text).then((result) => {
+          if (!result.ok) throw new Error(result.error || 'Could not copy message')
+        })
+      : navigator.clipboard.writeText(text)
+    void write
   }
 
   const interrupt = (): void => {
@@ -911,10 +1194,30 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
       clearTimeout(verifyTimerRef.current)
       verifyTimerRef.current = null
     }
+    lastTurnDurationRef.current = turnStartAtRef.current ? Date.now() - turnStartAtRef.current : undefined
+    if (streamRafRef.current != null) {
+      cancelAnimationFrame(streamRafRef.current)
+      flushStreamQueue()
+    }
+    flushStreamBuffer(true)
     void window.y.engine.cancel(sessionId)
+    setMessages((list) => {
+      const next = finishInterrupted(list, lastTurnDurationRef.current)
+      messagesRef.current = next
+      return next
+    })
+    void window.y.userland.checkpoint().then((checkpoint) => {
+      if (!checkpoint.ok || !checkpoint.checkpointId) return
+      setMessages((list) => {
+        const next = finishInterrupted(list, lastTurnDurationRef.current, checkpoint.checkpointId)
+        messagesRef.current = next
+        return next
+      })
+    })
     setBusy(false)
     setStatus('Interrupted.')
     setError('')
+    trackModifyEvent('modify_interrupted', { durationMs: lastTurnDurationRef.current })
     retriesRef.current = 0
   }
 
@@ -926,7 +1229,7 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
     send()
   }
 
-  const collapsedTurns = new Map<number, Array<{ message: Msg; index: number }>>()
+  const collapsedTurns = new Map<number, ChatWorkEntry[]>()
   const hiddenWork = new Set<number>()
   let turnStart = -1
   for (let index = 0; index < messages.length; index += 1) {
@@ -937,126 +1240,207 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
     }
     if (turnStart === -1 || message.role !== 'assistant' || !message.checkpointId || (message.durationMs === undefined && !message.interrupted)) continue
     const work = messages.slice(turnStart, index).map((item, offset) => ({ message: item, index: turnStart + offset }))
-    if (hasCollapsibleWork(work)) {
+    if (chatWorkHasCollapsibleTool(work)) {
       collapsedTurns.set(index, work)
       for (const entry of work) hiddenWork.add(entry.index)
     }
     turnStart = -1
   }
-
   return (
     <div className="modify">
       <div className="modify-head">
         <div className="modify-head-row">
           <div className="modify-title-wrap">
             <span className="modify-mark">
-              <ModifyMark size={16} />
+              <ModifyMark size={14} />
             </span>
             <span className="modify-title">Modify</span>
           </div>
-          <button type="button" className="modify-close" onClick={onClose}>
-            Close
-          </button>
-        </div>
-      </div>
-
-      <div className="modify-log" ref={logRef}>
-        {messages.length === 0 && !error ? (
-          <div className="modify-empty">
-            <span className="modify-empty-icon">
-              <ModifyMark size={28} />
-            </span>
-            <p>Describe a UI or behavior change. The agent edits <code>panel.tsx</code> live.</p>
-          </div>
-        ) : null}
-        {messages.map((m, i) => {
-          const key = `${m.role}-${'id' in m && m.id ? m.id : i}`
-          if (hiddenWork.has(i)) return null
-          if (m.role === 'thinking') {
-            return <ModifyThinkingBlock key={key} message={m} />
-          }
-          if (m.role === 'tool') {
-            if (m.system) {
-              return (
-                <div key={key} className="modify-tool-note">
-                  {m.name}
-                </div>
-              )
-            }
-            return <ModifyToolActivity key={key} message={m} />
-          }
-          if (m.role === 'user') {
-            const editing = editingMessage?.index === i
-            return (
-              <div key={key} className="modify-msg modify-user">
-                <span className="modify-role">you</span>
-                {editing ? (
-                  <textarea
-                    className="modify-inline-edit"
-                    value={editingMessage.text}
-                    autoFocus
-                    onChange={(event) => setEditingMessage({ index: i, text: event.currentTarget.value })}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Escape') setEditingMessage(null)
-                      if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') void editUserMessage(i, editingMessage.text)
-                    }}
-                  />
-                ) : <div className="modify-text modify-user-bubble">{m.text}</div>}
-                <div className="modify-message-actions">
-                  <button type="button" aria-label="Copy Modify message" onClick={() => copyMessage(m.text)}>
-                    <ModifyCopyIcon />
-                  </button>
-                  {editing ? (
-                    <>
-                      <button type="button" onClick={() => void editUserMessage(i, editingMessage.text)}>Save</button>
-                      <button type="button" onClick={() => setEditingMessage(null)}>Cancel</button>
-                    </>
-                  ) : (
-                    <button type="button" aria-label="Edit Modify message" onClick={() => setEditingMessage({ index: i, text: m.text })}>Edit</button>
-                  )}
-                </div>
-              </div>
-            )
-          }
-          const assistantMessage = (
-            <div key={key} className="modify-msg modify-assistant">
-              <MarkdownBody text={m.text ?? ''} />
-              {m.checkpointId ? (
-                <div className="modify-assistant-footer">
-                  <button type="button" className="modify-message-action" aria-label="Copy message" title="Copy message" onClick={() => copyMessage(m.text ?? '')}>
-                    <ModifyCopyIcon size={18} />
-                  </button>
-                  <details className="modify-message-menu">
-                    <summary className="modify-message-action" aria-label="More message actions" title="More"><ModifyMenuIcon size={18} /></summary>
-                    <div className="modify-message-menu-popover">
+          <div className="modify-head-actions">
+            <button
+              type="button"
+              className="modify-icon-button"
+              disabled={busy}
+              onClick={() => void createModifyChat()}
+              aria-label="New Modify chat"
+              title="New Modify chat"
+            >
+              <ModifyNewIcon size={16} />
+            </button>
+            <div className="modify-history-wrap">
+              <button
+                type="button"
+                className={'modify-icon-button' + (historyOpen ? ' active' : '')}
+                onClick={() => setHistoryOpen((open) => {
+                  if (!open) trackModifyEvent('modify_history_opened')
+                  return !open
+                })}
+                aria-label="Modify history"
+                title="Modify history"
+              >
+                <ModifyHistoryIcon size={16} />
+              </button>
+              {historyOpen ? (
+                <div className="modify-history-menu">
+                  {modifyChats.length ? (
+                    modifyChats.map((chat) => (
                       <button
                         type="button"
-                        onClick={(event) => {
-                          event.currentTarget.closest('details')?.removeAttribute('open')
-                          void resetToMessage(i)
-                        }}
+                        key={chat.id}
+                        className={'modify-history-item' + (chat.id === activeModifyChatId ? ' active' : '')}
+                        disabled={busy && chat.id !== activeModifyChatId}
+                        onClick={() => void selectModifyChat(chat.id)}
                       >
-                        <ModifyResetIcon size={15} /> Reset to this point
+                        <span className="modify-history-main">
+                          <span className="modify-history-title">{chat.title || 'New Modify chat'}</span>
+                          <span className="modify-history-count">{chat.messages.length} messages</span>
+                        </span>
+                        <span className="modify-history-age">{formatModifyChatAge(chat.updatedAt)}</span>
                       </button>
-                    </div>
-                  </details>
+                    ))
+                  ) : (
+                    <div className="modify-history-empty">No Modify chats yet.</div>
+                  )}
                 </div>
               ) : null}
             </div>
-          )
-          const work = collapsedTurns.get(i)
-          if (!work) return assistantMessage
-          return (
-            <div key={`completed-${key}`} className="modify-completed-turn">
-              <ModifyWorkSummary work={work} durationMs={m.durationMs} interrupted={m.interrupted} />
-              {assistantMessage}
-              <ModifyEditedFilesSummary work={work} />
+            <button type="button" className="modify-icon-button" onClick={openRevertGraph} aria-label="Revert Userland" title="Revert Userland">
+              <ModifyResetIcon size={16} />
+            </button>
+            <button type="button" className="modify-icon-button accent" onClick={onClose} aria-label="Close Modify" title="Close Modify">
+              <ModifyXIcon size={15} />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {revertGraph.open ? (
+        <div className="modify-revert-overlay" role="dialog" aria-modal="true" aria-label="Revert Userland">
+          <div className="modify-revert-panel">
+            <div className="modify-revert-head">
+              <div>
+                <strong>Revert Userland</strong>
+                <p>Pick a saved point in the app graph, or reset back to the original app.</p>
+              </div>
+              <button type="button" className="modify-message-action" aria-label="Close revert graph" onClick={closeRevertGraph}>
+                ×
+              </button>
             </div>
-          )
-        })}
-        {busy ? <div className="modify-live-work">Working for {formatLiveDuration(Math.max(0, elapsedTick - turnStartAtRef.current))}</div> : null}
-        {status ? <div className="modify-status">{status}</div> : null}
-        {error ? <div className="modify-error">{error}</div> : null}
+            {busy ? <div className="modify-revert-note">Wait until the coding agent finishes before reverting.</div> : null}
+            <button type="button" className="modify-reset-original" disabled={busy} onClick={() => void resetUserlandToOriginal()}>
+              Reset to original app
+            </button>
+            <div className="modify-revert-graph" data-testid="modify-revert-graph">
+              {revertGraph.entries.length ? (
+                revertGraph.entries.map((entry) => (
+                  <button
+                    type="button"
+                    key={entry.hash}
+                    className={'modify-revert-node' + (entry.current ? ' is-current' : '')}
+                    disabled={busy || entry.current}
+                    onClick={() => void restoreUserlandSnapshot(entry.hash)}
+                  >
+                    <span className="modify-revert-line" aria-hidden="true" />
+                    <span className="modify-revert-dot" aria-hidden="true" />
+                    <span className="modify-revert-node-main">
+                      <span>{entry.label}</span>
+                      <code>{entry.current ? 'Current app' : entry.kind === 'original' ? 'Starting point' : entry.shortHash}</code>
+                    </span>
+                    <span className="modify-revert-node-meta">
+                      {new Date(entry.timestamp).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                    </span>
+                  </button>
+                ))
+              ) : !revertGraph.loading ? (
+                <div className="modify-revert-empty">No saved app graph yet. You can still reset to the original app.</div>
+              ) : null}
+            </div>
+            {revertGraph.error ? <div className="modify-error">{revertGraph.error}</div> : null}
+          </div>
+        </div>
+      ) : null}
+
+      <div className="modify-log" ref={logRef}>
+        <div className="modify-log-inner">
+          {messages.length === 0 && !error ? (
+            <div className="modify-empty">
+              <span className="modify-empty-icon">
+                <ModifyMark size={28} />
+              </span>
+              <p>Describe a UI or behavior change. The agent edits it live.</p>
+            </div>
+          ) : null}
+          {messages.map((m, i) => {
+            const key = `${m.role}-${'id' in m && m.id ? m.id : i}`
+            if (hiddenWork.has(i)) return null
+            if (m.role === 'thinking') return <ChatThinkingBlock key={key} message={m} classes={CHAT_SURFACE_CLASSES.modify} />
+            if (m.role === 'tool') {
+              if (m.system) return <div key={key} className={CHAT_SURFACE_CLASSES.modify.toolNote}>{m.name}</div>
+              return <ChatToolMessage key={key} message={m} langFromTarget={langFromTarget} />
+            }
+            if (m.role === 'user') {
+              return (
+                <ChatUserMessage
+                  key={key}
+                  text={m.text ?? ''}
+                  editingText={editingMessage?.index === i ? editingMessage.text : undefined}
+                  classes={CHAT_SURFACE_CLASSES.modify}
+                  testId="modify-user-message"
+                  onCopy={() => copyMessage(m.text)}
+                  onStartEdit={() => setEditingMessage({ index: i, text: m.text })}
+                  onEditChange={(text) => setEditingMessage({ index: i, text })}
+                  onSubmitEdit={() => {
+                    if (editingMessage?.index === i) void editUserMessage(i, editingMessage.text)
+                  }}
+                  onCancelEdit={() => setEditingMessage(null)}
+                />
+              )
+            }
+            const assistantMessage = (
+              <ChatAssistantMessage
+                key={key}
+                text={m.text ?? ''}
+                checkpointId={m.checkpointId}
+                classes={CHAT_SURFACE_CLASSES.modify}
+                onCopy={() => copyMessage(m.text ?? '')}
+                onReset={(event) => {
+                  event.currentTarget.closest('details')?.removeAttribute('open')
+                  void resetToMessage(i)
+                }}
+              />
+            )
+            const work = collapsedTurns.get(i)
+            if (!work) return assistantMessage
+            return (
+              <div key={`completed-${key}`} className={CHAT_SURFACE_CLASSES.modify.completedTurn}>
+                <ChatWorkSummary
+                  work={work}
+                  durationMs={m.durationMs}
+                  interrupted={m.interrupted}
+                  classes={CHAT_SURFACE_CLASSES.modify}
+                  testId="modify-work-log"
+                  formatDuration={formatDuration}
+                  langFromTarget={langFromTarget}
+                />
+                {assistantMessage}
+                <ChatEditedFilesSummary
+                  work={work}
+                  classes={CHAT_SURFACE_CLASSES.modify}
+                  testId="modify-edited-files"
+                  onUndo={() => void undoTurnEdits(i)}
+                />
+              </div>
+            )
+          })}
+          {busy ? (
+            <div className="modify-live-work">
+              <ModifyBinarySpinner />
+              <span>Working for {formatLiveDuration(Math.max(0, elapsedTick - turnStartAtRef.current))}</span>
+            </div>
+          ) : null}
+          {status ? <div className="modify-status">{status}</div> : null}
+          {error ? <div className="modify-error">{error}</div> : null}
+        </div>
       </div>
 
       <div className="modify-composer-wrap">
@@ -1076,45 +1460,20 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
             ))}
           </div>
         ) : null}
-        <div className="modify-composer" data-testid="modify-composer">
-          {slashSuggestions.length ? (
-            <div className="modify-suggest" data-testid="modify-slash-suggestions">
-              {slashSuggestions.map((item) => (
-                <button
-                  key={item.name}
-                  type="button"
-                  className="modify-suggest-item"
-                  onClick={() => {
-                    setComposerValue(item.name + (item.name === '/clear' || item.name === '/help' ? '' : ' '))
-                    inputRef.current?.focus()
-                  }}
-                >
-                  <span className="modify-suggest-main">
-                    <span className="modify-suggest-title">{item.name}</span>
-                    <span className="modify-suggest-sub">{item.detail}</span>
-                  </span>
-                  <span className="modify-suggest-source">Modify</span>
-                </button>
-              ))}
-            </div>
-          ) : null}
-          <textarea
-            ref={inputRef}
-            defaultValue=""
-            rows={1}
-            data-native-input="true"
-            onChange={(e) => {
-              handleComposerInput(e.currentTarget.value)
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault()
-                send()
-              }
-            }}
-            placeholder={sessionId ? 'Describe a change to the app…' : 'Starting Modify engine…'}
-          />
-          <div className="modify-composer-row">
+        <ChatComposerShell
+          classes={CHAT_SURFACE_CLASSES.modify}
+          testId="modify-composer"
+          inputRef={inputRef}
+          placeholder={sessionId ? 'Describe a change to the app…' : 'Starting Modify engine…'}
+          onInput={handleComposerInput}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault()
+              send()
+            }
+          }}
+        >
+          <div className={CHAT_SURFACE_CLASSES.modify.composerRow}>
             <button
               type="button"
               className="modify-send"
@@ -1125,7 +1484,7 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
               {busy && !hasComposerInput ? <ModifyStopIcon size={16} /> : <ModifySendIcon size={16} />}
             </button>
           </div>
-        </div>
+        </ChatComposerShell>
       </div>
     </div>
   )

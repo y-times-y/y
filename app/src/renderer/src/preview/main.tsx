@@ -129,6 +129,17 @@ let previewState: AppState = {
   ]
 }
 
+let previewModifyChats: ModifyChatRecord[] = [
+  {
+    id: 'preview-modify-chat',
+    title: 'New Modify chat',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    messages: []
+  }
+]
+let previewActiveModifyChatId = 'preview-modify-chat'
+
 window.y = {
   userland: {
     read: async () => '',
@@ -136,10 +147,19 @@ window.y = {
     compile: async () => ({ ok: true, code: '' }),
     snapshot: async () => ({ ok: true }),
     revert: async () => ({ ok: true }),
+    history: async () => ({ ok: true, entries: [] }),
+    restoreSnapshot: async (hash) => ({ ok: true, hash }),
     checkpoint: async () => ({ ok: true, checkpointId: crypto.randomUUID() }),
     restoreCheckpoint: async (checkpointId) => ({ ok: true, checkpointId }),
     resetToSeed: async () => ({ ok: true }),
     onChanged: () => () => undefined
+  },
+  modify: {
+    open: async () => undefined,
+    close: async () => undefined,
+    toggle: async () => undefined,
+    onChange: () => () => undefined,
+    onOpenFile: () => () => undefined
   },
   engine: {
     list: async () => ['claude-code', 'codex'],
@@ -160,8 +180,33 @@ window.y = {
         ]
       }
     ],
+    checkCliStatus: async () => ({
+      ok: true,
+      checkedAt: new Date().toISOString(),
+      tools: [
+        {
+          id: 'claude-code',
+          label: 'Claude Code',
+          command: 'claude',
+          installed: true,
+          authenticated: true,
+          installCommand: 'curl -fsSL https://claude.ai/install.sh | bash',
+          authCommand: 'claude auth login',
+          docsUrl: 'https://docs.anthropic.com/en/docs/claude-code/quickstart'
+        },
+        {
+          id: 'codex',
+          label: 'Codex',
+          command: 'codex',
+          installed: true,
+          authenticated: true,
+          installCommand: 'npm install -g @openai/codex',
+          authCommand: 'codex login',
+          docsUrl: 'https://github.com/openai/codex'
+        }
+      ]
+    }),
     start: async () => ({ ok: true, sessionId: 'preview' }),
-    startModify: async () => ({ ok: true, sessionId: 'preview' }),
     send: async () => ({ ok: true }),
     command: async (_sessionId, command) => ({
       ok: true,
@@ -208,6 +253,7 @@ window.y = {
     checkpoint: async () => ({ ok: true, checkpointId: crypto.randomUUID() }),
     restoreCheckpoint: async (_projectId, checkpointId) => ({ ok: true, checkpointId }),
     addProject: async () => ({ ok: false, canceled: true, state: previewState }),
+    getIsolationStatus: async () => ({ ok: true, git: false, canIsolate: false, hasHead: false }),
     createChat: async (projectId?: string) => {
       const project = previewState.projects.find((p) => p.id === projectId) ?? previewState.projects[0]
       if (!project) return { ok: false, error: 'Open a project folder first.', state: previewState }
@@ -300,7 +346,60 @@ window.y = {
       }
       return { ok: true, state: previewState }
     },
+    removeProject: async (projectId) => {
+      const projects = previewState.projects.filter((p) => p.id !== projectId)
+      const activeProject = projects.find((p) => p.id === previewState.activeProjectId) ?? projects[0]
+      const activeChat = activeProject?.chats.find((chat) => !chat.archived)
+      previewState = {
+        ...previewState,
+        projects,
+        activeProjectId: activeProject?.id,
+        activeChatId: activeChat?.id
+      }
+      return { ok: true, state: previewState }
+    },
+    listModifyChats: async () => ({
+      ok: true,
+      chats: previewModifyChats,
+      activeChatId: previewActiveModifyChatId
+    }),
+    createModifyChat: async (seed) => {
+      const chat: ModifyChatRecord = {
+        id: `preview-modify-${Date.now()}`,
+        title: 'New Modify chat',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        messages: [],
+        engineId: seed?.engineId,
+        modelId: seed?.modelId,
+        runOptions: seed?.runOptions
+      }
+      previewModifyChats = [chat, ...previewModifyChats]
+      previewActiveModifyChatId = chat.id
+      return { ok: true, chat, chats: previewModifyChats, activeChatId: previewActiveModifyChatId }
+    },
+    updateModifyChat: async (chatId, patch) => {
+      previewModifyChats = previewModifyChats.map((chat) =>
+        chat.id === chatId ? { ...chat, ...patch, updatedAt: new Date().toISOString() } : chat
+      )
+      return { ok: true, chats: previewModifyChats, activeChatId: previewActiveModifyChatId }
+    },
+    setActiveModifyChat: async (chatId) => {
+      if (previewModifyChats.some((chat) => chat.id === chatId)) previewActiveModifyChatId = chatId
+      return { ok: true, chats: previewModifyChats, activeChatId: previewActiveModifyChatId }
+    },
     onStateChanged: () => () => undefined
+  },
+  feedback: {
+    submit: async () => ({ ok: true, stored: 'local' })
+  },
+  analytics: {
+    identify: async () => ({ ok: true }),
+    track: async () => ({ ok: true }),
+    reportMissingBrick: async () => ({ ok: true })
+  },
+  clipboard: {
+    writeText: async () => ({ ok: true })
   },
   net: { request: async () => ({ ok: false, error: 'preview' }) },
   files: {
@@ -317,16 +416,24 @@ window.y = {
     resize: async () => ({ ok: true }),
     kill: async () => ({ ok: true }),
     onEvent: () => () => undefined
-  },
-  modify: {
-    open: () => undefined,
-    close: () => undefined,
-    toggle: () => undefined,
-    onChange: () => () => undefined
   }
 }
 
 async function boot(): Promise<void> {
+  if (params.get('mode') === 'modify') {
+    await import('../assets/main.css')
+    const { default: ModifyChat } = await import('../kernel/ModifyChat')
+    createRoot(document.getElementById('root')!).render(
+      <StrictMode>
+        <div style={{ height: '100%', display: 'flex', background: '#09090a' }}>
+          <div style={{ width: 860, minWidth: 0, display: 'flex' }}>
+            <ModifyChat onClose={() => undefined} />
+          </div>
+        </div>
+      </StrictMode>
+    )
+    return
+  }
   const { default: Panel } = await import('../../../../userland-seed/panel')
   createRoot(document.getElementById('root')!).render(
     <StrictMode>

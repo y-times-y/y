@@ -1,12 +1,38 @@
-import { contextBridge, ipcRenderer } from 'electron'
-import { electronAPI } from '@electron-toolkit/preload'
+import { clipboard, contextBridge, ipcRenderer } from 'electron'
 
 type EngineModelCatalog = {
   engine: string
   label: string
   logoUrl?: string
   defaultModel: string
-  models: { id: string; label: string }[]
+  models: { id: string; label: string; contextWindow?: number }[]
+}
+
+type OnboardingCliCheckResult = {
+  ok: boolean
+  checkedAt: string
+  tools: Array<{
+    id: 'claude-code' | 'codex'
+    label: string
+    command: string
+    installed: boolean
+    version?: string
+    authenticated: boolean
+    installCommand: string
+    authCommand: string
+    docsUrl: string
+    error?: string
+  }>
+}
+
+type SnapshotEntry = {
+  hash: string
+  shortHash: string
+  message: string
+  label: string
+  kind: 'original' | 'change' | 'snapshot'
+  timestamp: string
+  current?: boolean
 }
 
 type EngineCommand =
@@ -230,6 +256,26 @@ type AppChat = {
   runOptions?: EngineRunOptions
 }
 
+type ModifyChatRecord = {
+  id: string
+  title: string
+  createdAt: string
+  updatedAt: string
+  messages: AppMsg[]
+  archived?: boolean
+  engineId?: string
+  modelId?: string
+  runOptions?: EngineRunOptions
+}
+
+type ModifyChatResult = {
+  ok: boolean
+  chats?: ModifyChatRecord[]
+  chat?: ModifyChatRecord
+  activeChatId?: string
+  error?: string
+}
+
 type AppProject = {
   id: string
   name: string
@@ -259,16 +305,40 @@ type ProjectDirectoryEntry = SelectedFile & {
 type ProjectFileResult = {
   ok: boolean
   content?: string
+  path?: string
+  relPath?: string
   error?: string
 }
 
-let modifyOpen = false
-const modifyListeners = new Set<(open: boolean) => void>()
+type CreateChatOptions = {
+  isolate?: boolean
+}
 
-function emitModify(open: boolean): void {
-  if (modifyOpen === open) return
-  modifyOpen = open
-  modifyListeners.forEach((cb) => cb(open))
+type IsolationStatus = {
+  ok: boolean
+  git: boolean
+  canIsolate: boolean
+  hasHead: boolean
+  reason?: string
+  error?: string
+}
+
+const electron = {
+  process: {
+    platform: process.platform,
+    versions: {
+      electron: process.versions.electron,
+      chrome: process.versions.chrome,
+      node: process.versions.node
+    }
+  },
+  window: {
+    onFullscreen: (cb: (full: boolean) => void): (() => void) => {
+      const listener = (_e: unknown, full: boolean): void => cb(full)
+      ipcRenderer.on('window:fullscreen', listener)
+      return () => ipcRenderer.removeListener('window:fullscreen', listener)
+    }
+  }
 }
 
 // y's brick-box: the ONLY powers Userland (the renderer) can reach.
@@ -280,10 +350,14 @@ const y = {
     getPath: (): Promise<string> => ipcRenderer.invoke('userland:path'),
     compile: (): Promise<{ ok: boolean; code?: string; error?: string }> =>
       ipcRenderer.invoke('userland:compile'),
-    snapshot: (): Promise<{ ok: boolean; hash?: string; count?: number; error?: string }> =>
-      ipcRenderer.invoke('userland:snapshot'),
+    snapshot: (message?: string): Promise<{ ok: boolean; hash?: string; count?: number; error?: string }> =>
+      ipcRenderer.invoke('userland:snapshot', message),
     revert: (): Promise<{ ok: boolean; hash?: string; count?: number; error?: string }> =>
       ipcRenderer.invoke('userland:revert'),
+    history: (): Promise<{ ok: boolean; entries?: SnapshotEntry[]; error?: string }> =>
+      ipcRenderer.invoke('userland:history'),
+    restoreSnapshot: (hash: string): Promise<{ ok: boolean; hash?: string; count?: number; error?: string }> =>
+      ipcRenderer.invoke('userland:restoreSnapshot', hash),
     checkpoint: (): Promise<{ ok: boolean; checkpointId?: string; error?: string }> =>
       ipcRenderer.invoke('userland:checkpoint'),
     restoreCheckpoint: (checkpointId: string): Promise<{ ok: boolean; checkpointId?: string; error?: string }> =>
@@ -301,6 +375,7 @@ const y = {
   engine: {
     list: (): Promise<string[]> => ipcRenderer.invoke('engine:list'),
     models: (): Promise<EngineModelCatalog[]> => ipcRenderer.invoke('engine:models'),
+    checkCliStatus: (): Promise<OnboardingCliCheckResult> => ipcRenderer.invoke('engine:checkCliStatus'),
     start: (args: { engine: string; model?: string; options?: EngineRunOptions; cwd?: string }) =>
       ipcRenderer.invoke('engine:start', args),
     // Modify session: write access pinned to the Userland dir (Kernel-controlled).
@@ -330,10 +405,15 @@ const y = {
       ipcRenderer.invoke('app:restoreCheckpoint', projectId, checkpointId),
     addProject: (): Promise<{ ok: boolean; canceled?: boolean; state?: AppState; error?: string }> =>
       ipcRenderer.invoke('app:addProject'),
-    createChat: (
+    getIsolationStatus: (
       projectId?: string
+    ): Promise<IsolationStatus> =>
+      ipcRenderer.invoke('app:getIsolationStatus', projectId),
+    createChat: (
+      projectId?: string,
+      options?: CreateChatOptions
     ): Promise<{ ok: boolean; state?: AppState; error?: string }> =>
-      ipcRenderer.invoke('app:createChat', projectId),
+      ipcRenderer.invoke('app:createChat', projectId, options),
     selectFiles: (
       projectId?: string
     ): Promise<{ ok: boolean; canceled?: boolean; files: SelectedFile[]; error?: string }> =>
@@ -384,10 +464,59 @@ const y = {
       open: boolean
     ): Promise<{ ok: boolean; state?: AppState; error?: string }> =>
       ipcRenderer.invoke('app:setProjectOpen', projectId, open),
+    removeProject: (
+      projectId: string
+    ): Promise<{ ok: boolean; state?: AppState; error?: string }> =>
+      ipcRenderer.invoke('app:removeProject', projectId),
+    listModifyChats: (): Promise<ModifyChatResult> =>
+      ipcRenderer.invoke('app:listModifyChats'),
+    createModifyChat: (
+      seed?: { engineId?: string; modelId?: string; runOptions?: EngineRunOptions }
+    ): Promise<ModifyChatResult> =>
+      ipcRenderer.invoke('app:createModifyChat', seed),
+    updateModifyChat: (
+      chatId: string,
+      patch: { title?: string; messages?: AppMsg[]; archived?: boolean; engineId?: string; modelId?: string; runOptions?: EngineRunOptions }
+    ): Promise<ModifyChatResult> =>
+      ipcRenderer.invoke('app:updateModifyChat', chatId, patch),
+    setActiveModifyChat: (chatId: string): Promise<ModifyChatResult> =>
+      ipcRenderer.invoke('app:setActiveModifyChat', chatId),
     onStateChanged: (cb: (state: AppState) => void): (() => void) => {
       const listener = (_e: unknown, state: AppState): void => cb(state)
       ipcRenderer.on('app:stateChanged', listener)
       return () => ipcRenderer.removeListener('app:stateChanged', listener)
+    }
+  },
+  feedback: {
+    submit: (payload: {
+      message: string
+      category?: string
+      context?: Record<string, unknown>
+    }): Promise<{ ok: boolean; stored: 'remote' | 'local'; error?: string }> =>
+      ipcRenderer.invoke('feedback:submit', payload)
+  },
+  analytics: {
+    identify: (payload: { userId: string; email?: string }): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke('analytics:identify', payload),
+    track: (name: string, props?: Record<string, unknown>): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke('analytics:track', name, props ?? {}),
+    reportMissingBrick: (report: {
+      brick: string
+      reason: string
+      surface: string
+      confidence: string
+      engineId?: string
+    }): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke('analytics:reportMissingBrick', report)
+  },
+  clipboard: {
+    writeText: (text: string): Promise<{ ok: boolean; error?: string }> => {
+      try {
+        clipboard.writeText(text)
+        return Promise.resolve({ ok: true })
+      } catch (err) {
+        return Promise.resolve({ ok: false, error: err instanceof Error ? err.message : String(err) })
+      }
     }
   },
   // ---- Capability bricks (Phase 6): general powers Userland composes into ----
@@ -427,38 +556,68 @@ const y = {
       ipcRenderer.on('terminal:event', listener)
       return () => ipcRenderer.removeListener('terminal:event', listener)
     }
-  },
-  modify: {
-    open: () => emitModify(true),
-    close: () => emitModify(false),
-    toggle: () => emitModify(!modifyOpen),
-    onChange: (cb: (open: boolean) => void): (() => void) => {
-      modifyListeners.add(cb)
-      cb(modifyOpen)
-      return () => modifyListeners.delete(cb)
-    }
   }
 }
 
 // Custom APIs for renderer
 const api = {}
 
+const yKernelAuth = {
+  load: () => ipcRenderer.invoke('kernel-auth:load'),
+  restore: () => ipcRenderer.invoke('kernel-auth:restore'),
+  signIn: () => ipcRenderer.invoke('kernel-auth:signIn'),
+  save: (payload: {
+    tokens: { accessToken: string; refreshToken: string }
+    user: {
+      id: string
+      email?: string
+      displayName?: string
+      profileImageUrl?: string
+      connectedAccounts?: Array<{
+        provider: string
+        providerAccountId: string
+        profile?: {
+          username?: string
+          displayName?: string
+          avatarUrl?: string
+          profileUrl?: string
+        }
+      }>
+    }
+  }) => ipcRenderer.invoke('kernel-auth:save', payload),
+  clear: () => ipcRenderer.invoke('kernel-auth:clear'),
+  openExternal: (url: string) => ipcRenderer.invoke('kernel-auth:openExternal', url),
+  onCallback: (cb: (url: string) => void): (() => void) => {
+    const listener = (_event: unknown, url: string): void => cb(url)
+    ipcRenderer.on('auth:callback', listener)
+    return () => ipcRenderer.removeListener('auth:callback', listener)
+  },
+  onChanged: (cb: (session: unknown) => void): (() => void) => {
+    const listener = (_event: unknown, session: unknown): void => cb(session)
+    ipcRenderer.on('kernel-auth:changed', listener)
+    return () => ipcRenderer.removeListener('kernel-auth:changed', listener)
+  }
+}
+
 // Use `contextBridge` APIs to expose Electron APIs to
 // renderer only if context isolation is enabled, otherwise
 // just add to the DOM global.
 if (process.contextIsolated) {
   try {
-    contextBridge.exposeInMainWorld('electron', electronAPI)
+    contextBridge.exposeInMainWorld('electron', electron)
     contextBridge.exposeInMainWorld('api', api)
     contextBridge.exposeInMainWorld('y', y)
+    contextBridge.exposeInMainWorld('yKernelAuth', yKernelAuth)
   } catch (error) {
     console.error(error)
   }
 } else {
   // @ts-ignore (define in dts)
-  window.electron = electronAPI
+  window.electron = electron
   // @ts-ignore (define in dts)
   window.api = api
   // @ts-ignore (define in dts)
   window.y = y
+  // @ts-ignore (define in dts)
+  window.yKernelAuth = yKernelAuth
 }

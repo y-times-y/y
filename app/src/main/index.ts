@@ -6,16 +6,64 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { startSession, sendToSession, commandSession, cancelSession, listEngines, listModels } from './engine'
 import type { EngineRunOptions } from './engine/types'
+import { checkCliStatus } from './engine/cliStatus'
 import { ensureWorkspace, registerCapabilityBricks } from './capabilities'
 import { registerAppStateBricks } from './appState'
 import { killAllTerminals, registerTerminalBricks } from './terminal'
+import { registerAnalyticsBricks } from './analytics'
+import { registerFeedbackBricks } from './feedback'
+import { registerOnboardingBricks } from './onboarding'
+import { registerAuthBricks } from './authStore'
 import {
   ensureRepo,
   snapshot as ulSnapshot,
   revert as ulRevert,
+  history as ulHistory,
+  restoreSnapshot as ulRestoreSnapshot,
   captureCheckpoint,
   restoreCheckpoint
 } from './userlandGit'
+
+const AUTH_CALLBACK_PROTOCOL = 'y'
+
+function isAuthCallbackUrl(value: string | undefined): value is string {
+  return typeof value === 'string' && value.startsWith(`${AUTH_CALLBACK_PROTOCOL}://auth-callback`)
+}
+
+function emitAuthCallback(url: string): void {
+  const windows = BrowserWindow.getAllWindows()
+  for (const window of windows) {
+    if (!window.isDestroyed()) {
+      window.webContents.send('auth:callback', url)
+      if (window.isMinimized()) window.restore()
+      window.focus()
+    }
+  }
+}
+
+function registerAuthProtocol(): void {
+  if (process.defaultApp && process.argv.length >= 2) {
+    app.setAsDefaultProtocolClient(AUTH_CALLBACK_PROTOCOL, process.execPath, [process.argv[1]])
+  } else {
+    app.setAsDefaultProtocolClient(AUTH_CALLBACK_PROTOCOL)
+  }
+}
+
+const gotSingleInstanceLock = app.requestSingleInstanceLock()
+if (!gotSingleInstanceLock) {
+  app.quit()
+} else {
+  app.on('second-instance', (_event, argv) => {
+    const callbackUrl = argv.find(isAuthCallbackUrl)
+    if (callbackUrl) emitAuthCallback(callbackUrl)
+  })
+}
+
+app.on('open-url', (event, url) => {
+  if (!isAuthCallbackUrl(url)) return
+  event.preventDefault()
+  emitAuthCallback(url)
+})
 
 // ---- Userland lives in a writable folder, NOT inside the app bundle ----
 // It sits under Electron's per-user data dir. The app reads it at runtime,
@@ -163,6 +211,7 @@ function createWindow(): void {
 app.whenReady().then(async () => {
   // Set app user model id for windows
   electronApp.setAppUserModelId('com.y.app')
+  registerAuthProtocol()
 
   // Make sure esbuild can find its binary in the packaged app (no-op in dev).
   fixEsbuildBinaryPath()
@@ -204,10 +253,20 @@ app.whenReady().then(async () => {
   // Snapshot/revert are backed by native Git. Userland keeps its own repository,
   // separate from every project repository.
   // Snapshot = a commit of the current Userland state; no-ops when unchanged.
-  ipcMain.handle('userland:snapshot', () => ulSnapshot(userlandDir()))
+  ipcMain.handle('userland:snapshot', (_e, message?: string) => ulSnapshot(userlandDir(), message))
 
   // Revert = one step of undo: dirty → restore last snapshot; clean → step back one.
   ipcMain.handle('userland:revert', () => ulRevert(userlandDir()))
+  ipcMain.handle('userland:history', () => ulHistory(userlandDir()))
+  ipcMain.handle('userland:restoreSnapshot', async (_e, hash: string) => {
+    const result = await ulRestoreSnapshot(userlandDir(), hash)
+    if (result.ok) {
+      for (const window of BrowserWindow.getAllWindows()) {
+        if (!window.isDestroyed()) window.webContents.send('userland:changed')
+      }
+    }
+    return result
+  })
 
   ipcMain.handle('userland:checkpoint', () => captureCheckpoint(userlandDir()))
   ipcMain.handle('userland:restoreCheckpoint', (_e, checkpointId: string) =>
@@ -217,7 +276,7 @@ app.whenReady().then(async () => {
     try {
       const seed = await readUserlandSeed()
       await writeFile(userlandFile(), seed, 'utf-8')
-      await ulSnapshot(userlandDir()).catch((err) => {
+      await ulSnapshot(userlandDir(), 'original app').catch((err) => {
         console.warn('[y] Userland reset snapshot unavailable:', err)
       })
       for (const window of BrowserWindow.getAllWindows()) {
@@ -234,32 +293,49 @@ app.whenReady().then(async () => {
   // back as 'engine:event' pushes (see engine/index.ts → broadcast).
   ipcMain.handle('engine:list', () => listEngines())
   ipcMain.handle('engine:models', () => listModels())
-  // Normal chat is the user's real coding agent. Do not reinterpret the official
-  // CLI's tools, approvals, or sandbox configuration.
-  ipcMain.handle('engine:start', (_e, args: { engine: string; model?: string; options?: EngineRunOptions }) =>
-    startSession({
+  ipcMain.handle('engine:checkCliStatus', () => checkCliStatus())
+  // Normal chat is the user's real coding agent. y gives the CLI the selected
+  // project as cwd, defaults to the CLI's dangerous bypass mode, and otherwise
+  // lets the official CLI decide tools/sandbox details.
+  ipcMain.handle('engine:start', (_e, args: { engine: string; model?: string; options?: EngineRunOptions }) => {
+    const cwd = args.options?.workingDirectory?.trim()
+    if (!cwd) return { ok: false, error: 'Open a project folder before starting an engine.' }
+    return startSession({
       ...args,
-      cwd: args.options?.workingDirectory?.trim(),
+      options: {
+        ...args.options,
+        workingDirectory: cwd,
+        claudeAllowDangerouslySkipPermissions:
+          args.options?.claudeAllowDangerouslySkipPermissions ?? true,
+        claudeDangerouslySkipPermissions:
+          args.options?.claudeDangerouslySkipPermissions ?? true,
+        codexDangerouslyBypassApprovalsAndSandbox:
+          args.options?.codexDangerouslyBypassApprovalsAndSandbox ?? true
+      },
+      cwd,
       mode: 'native'
     })
-  )
+  })
   // Modify chat (Kernel-only): write access, pinned to the Userland dir so the
   // agent's edits are scoped there and can never reach y's own source.
   ipcMain.handle(
     'engine:startModify',
-    (_e, args: { engine: string; model?: string; options?: EngineRunOptions }) =>
-      startSession({
+    (_e, args: { engine: string; model?: string; options?: EngineRunOptions }) => {
+      const { workingDirectory: _ignoredWorkingDirectory, ...safeOptions } = args.options ?? {}
+      return startSession({
         engine: args.engine,
         model: args.model,
         options: {
-          ...args.options,
+          ...safeOptions,
           claudeToolMode: 'safe',
           claudeDangerouslySkipPermissions: false,
-          codexDangerouslyBypassApprovalsAndSandbox: false
+          codexDangerouslyBypassApprovalsAndSandbox: false,
+          codexWebSearch: safeOptions.codexWebSearch ?? true
         },
         cwd: userlandDir(),
         mode: 'write'
       })
+    }
   )
   ipcMain.handle('engine:send', (_e, sessionId: string, prompt: string) =>
     sendToSession(sessionId, prompt)
@@ -271,6 +347,37 @@ app.whenReady().then(async () => {
 
   // ---- Real app state: project folders + persisted per-project chats.
   registerAppStateBricks()
+
+  // ---- Product instrumentation + first-run setup checks.
+  registerAuthBricks()
+  registerAnalyticsBricks()
+  registerFeedbackBricks()
+  registerOnboardingBricks()
+  ipcMain.handle('auth:config', () => {
+    const projectId =
+      process.env.HEXCLAVE_PROJECT_ID ||
+      process.env.VITE_HEXCLAVE_PROJECT_ID ||
+      process.env.NEXT_PUBLIC_HEXCLAVE_PROJECT_ID ||
+      ''
+    const publishableClientKey =
+      process.env.HEXCLAVE_PUBLISHABLE_CLIENT_KEY ||
+      process.env.VITE_HEXCLAVE_PUBLISHABLE_CLIENT_KEY ||
+      process.env.NEXT_PUBLIC_HEXCLAVE_PUBLISHABLE_CLIENT_KEY ||
+      ''
+    return {
+      ok: true,
+      configured: Boolean(projectId),
+      projectId: projectId || undefined,
+      publishableClientKey: publishableClientKey || undefined
+    }
+  })
+  ipcMain.handle('auth:openExternal', (_e, url: string) => {
+    if (!/^https?:\/\//.test(url) && !isAuthCallbackUrl(url)) {
+      return { ok: false, error: 'Only web URLs and y auth callbacks can be opened for auth.' }
+    }
+    void shell.openExternal(url)
+    return { ok: true }
+  })
 
   // ---- PTY terminal brick: real interactive shell sessions rendered by Userland.
   registerTerminalBricks()

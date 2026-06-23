@@ -1,0 +1,13 @@
+name = "ytimesy"
+main = "src/index.ts"
+compatibility_date = "2025-11-05"
+
+routes = [
+  { pattern = "ytimesy.com", custom_domain = true },
+  { pattern = "www.ytimesy.com", custom_domain = true }
+]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "ytimesy-feedback"
+database_id = "b169832d-7574-4b75-9b6b-4b880bfbc1a6"

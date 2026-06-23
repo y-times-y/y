@@ -56,7 +56,8 @@ function broadcast(sessionId: string, event: AgentEvent): void {
 export function startSession(args: StartArgs): { ok: boolean; sessionId?: string; error?: string } {
   const engine = engines[args.engine]
   if (!engine) return { ok: false, error: `Unknown engine: ${args.engine}` }
-  const cwd = args.options?.workingDirectory?.trim() || args.cwd
+  const optionCwd = args.options?.workingDirectory?.trim()
+  const cwd = args.mode === 'native' ? optionCwd || args.cwd : args.cwd || optionCwd
 
   // The session owns its id (created in its constructor). The emit callback
   // needs that id; it only fires after send(), by which point `id` is set.

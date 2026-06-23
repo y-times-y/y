@@ -82,6 +82,7 @@ async function checkTool(args: Omit<ToolStatus, 'installed' | 'version' | 'authe
 
 export function registerOnboardingBricks(): void {
   ipcMain.handle('onboarding:checkCli', async (): Promise<CliCheckResult> => {
+    const startedAt = Date.now()
     await trackAnalytics('onboarding_cli_check_started')
     const tools = await Promise.all([
       checkTool({
@@ -103,8 +104,9 @@ export function registerOnboardingBricks(): void {
     ])
     const result = { ok: true, checkedAt: new Date().toISOString(), tools }
     await trackAnalytics('onboarding_cli_check_completed', {
-      claudeInstalled: tools[0]?.installed ?? false,
-      codexInstalled: tools[1]?.installed ?? false
+      toolCount: tools.length,
+      readyCount: tools.filter((tool) => tool.authenticated).length,
+      durationMs: Date.now() - startedAt
     })
     return result
   })

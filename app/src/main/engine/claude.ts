@@ -130,7 +130,7 @@ function splitArgs(value: string | undefined): string[] {
 }
 
 function safeToolSet(mode: StartOpts['mode']): string {
-  return mode === 'write' ? 'Read,Glob,Grep,Edit,Write' : 'Read,Glob,Grep'
+  return mode === 'write' ? 'Read,Glob,Grep,Edit,Write,Bash' : 'Read,Glob,Grep'
 }
 
 function commandSource(name: string): string {
@@ -468,7 +468,7 @@ class ClaudeSession implements Session {
       return { ok: false, error: 'Claude Code does not expose thread rollback through the current non-interactive CLI session.' }
     }
     if (command.name === 'goal') {
-      return { ok: false, error: 'Claude Code does not expose native goals in this chat.' }
+      return { ok: false, error: 'Claude Code does not expose a native persistent goal command through the current CLI adapter.' }
     }
     if (command.name === 'inventory') {
       if (command.target === 'plugins') {
