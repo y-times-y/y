@@ -25,6 +25,17 @@ type OnboardingCliCheckResult = {
   }>
 }
 
+type AppUpdateState = {
+  checking: boolean
+  currentVersion: string
+  latestVersion?: string
+  available: boolean
+  releaseUrl?: string
+  downloadUrl?: string
+  checkedAt?: string
+  error?: string
+}
+
 type SnapshotEntry = {
   hash: string
   shortHash: string
@@ -570,6 +581,16 @@ const y = {
       ): void => cb(event)
       ipcRenderer.on('terminal:event', listener)
       return () => ipcRenderer.removeListener('terminal:event', listener)
+    }
+  },
+  updates: {
+    get: (): Promise<AppUpdateState> => ipcRenderer.invoke('app-update:get'),
+    check: (): Promise<AppUpdateState> => ipcRenderer.invoke('app-update:check'),
+    open: (): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('app-update:open'),
+    onChanged: (cb: (state: AppUpdateState) => void): (() => void) => {
+      const listener = (_e: unknown, state: AppUpdateState): void => cb(state)
+      ipcRenderer.on('app-update:changed', listener)
+      return () => ipcRenderer.removeListener('app-update:changed', listener)
     }
   }
 }

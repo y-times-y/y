@@ -6,6 +6,59 @@ function trackKernelEvent(name: string, props?: Record<string, unknown>): void {
   void window.y.analytics.track(name, props)
 }
 
+function UpdateNotice(): React.JSX.Element | null {
+  const [state, setState] = React.useState<AppUpdateState | null>(null)
+  const [dismissedVersion, setDismissedVersion] = React.useState(() =>
+    window.localStorage.getItem('y.dismissedUpdateVersion') || ''
+  )
+
+  React.useEffect(() => {
+    let mounted = true
+    void window.y.updates.get().then((next) => {
+      if (mounted) setState(next)
+    })
+    const off = window.y.updates.onChanged((next) => setState(next))
+    return () => {
+      mounted = false
+      off()
+    }
+  }, [])
+
+  if (!state?.available || !state.latestVersion || dismissedVersion === state.latestVersion) return null
+
+  return (
+    <div className="kernel-update-notice" role="status" aria-live="polite">
+      <div className="kernel-update-badge">Update available</div>
+      <div className="kernel-update-copy">
+        y {state.latestVersion} is ready.
+      </div>
+      <div className="kernel-update-actions">
+        <button
+          className="kernel-update-now"
+          type="button"
+          onClick={() => {
+            trackKernelEvent('app_update_opened', { latestVersion: state.latestVersion })
+            void window.y.updates.open()
+          }}
+        >
+          Update now
+        </button>
+        <button
+          className="kernel-update-later"
+          type="button"
+          onClick={() => {
+            window.localStorage.setItem('y.dismissedUpdateVersion', state.latestVersion!)
+            setDismissedVersion(state.latestVersion!)
+            trackKernelEvent('app_update_dismissed', { latestVersion: state.latestVersion })
+          }}
+        >
+          Later
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // Kernel frame: Userland fills the window; Modify is a Kernel-owned rail.
 function Shell(): React.JSX.Element {
   const [modifyOpen, setModifyOpen] = React.useState(false)
@@ -114,6 +167,7 @@ function Shell(): React.JSX.Element {
           />
           <ModifyChat onClose={() => closeModify('modify')} />
         </aside>
+        <UpdateNotice />
       </div>
     </div>
   )

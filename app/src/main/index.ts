@@ -1,7 +1,7 @@
 import { app, shell, BrowserWindow, ipcMain, net, protocol } from 'electron'
 import { join } from 'path'
 import { pathToFileURL } from 'url'
-import { mkdir, readFile, writeFile, stat } from 'fs/promises'
+import { copyFile, mkdir, readFile, writeFile, stat } from 'fs/promises'
 import { watch } from 'node:fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
@@ -15,6 +15,7 @@ import { registerAnalyticsBricks } from './analytics'
 import { registerFeedbackBricks } from './feedback'
 import { registerOnboardingBricks } from './onboarding'
 import { registerAuthBricks } from './authStore'
+import { registerUpdateBricks } from './appUpdates'
 import {
   ensureRepo,
   snapshot as ulSnapshot,
@@ -155,6 +156,19 @@ function userlandFile(): string {
   return join(userlandDir(), 'panel.tsx')
 }
 
+function isKnownLightUserlandDefault(source: string): boolean {
+  return (
+    source.includes('data-testid="y-app"') &&
+    source.includes('--y-bg: #f5f5f7') &&
+    source.includes('--y-sidebar: rgba(230, 231, 235')
+  )
+}
+
+function userlandRepairBackupFile(): string {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  return join(userlandDir(), `panel.before-dark-repair.${stamp}.tsx`)
+}
+
 // Snapshot history lives in a git repo INSIDE the Userland folder — fully
 // separate from the project repo. We pass identity via -c flags so we never
 // touch the user's global git config, and always run with cwd = userlandDir.
@@ -163,9 +177,15 @@ async function ensureUserland(): Promise<void> {
   const seed = await readUserlandSeed()
   let needsWrite = false
   try {
-    await readFile(userlandFile())
+    const live = await readFile(userlandFile(), 'utf-8')
+    if (isKnownLightUserlandDefault(live)) {
+      await copyFile(userlandFile(), userlandRepairBackupFile()).catch((err) => {
+        console.warn('[y] Userland dark repair backup unavailable:', err)
+      })
+      needsWrite = true
+    }
     // Dev: pull kernel seed updates into the live Userland file when seed is newer.
-    if (is.dev) {
+    if (!needsWrite && is.dev) {
       const [seedStat, liveStat] = await Promise.all([stat(userlandSeedFile()), stat(userlandFile())])
       if (seedStat.mtimeMs > liveStat.mtimeMs) needsWrite = true
     }
@@ -192,10 +212,7 @@ function createWindow(): void {
     height: 820,
     show: false,
     autoHideMenuBar: true,
-    backgroundColor: process.platform === 'darwin' ? '#00000000' : '#09090a',
-    ...(process.platform === 'darwin'
-      ? { transparent: true, vibrancy: 'sidebar' as const, visualEffectState: 'active' as const }
-      : {}),
+    backgroundColor: '#09090a',
     ...(isMac
       ? {
           // Lose the separate macOS title-bar strip (the brown bar above the UI).
@@ -389,6 +406,7 @@ app.whenReady().then(async () => {
   registerAnalyticsBricks()
   registerFeedbackBricks()
   registerOnboardingBricks()
+  registerUpdateBricks()
   ipcMain.handle('auth:config', () => {
     const projectId =
       process.env.HEXCLAVE_PROJECT_ID ||

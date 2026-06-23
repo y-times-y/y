@@ -506,6 +506,12 @@ interface YApi {
     kill: (id: string) => Promise<{ ok: boolean; error?: string }>
     onEvent: (cb: (event: TerminalEvent) => void) => () => void
   }
+  updates: {
+    get: () => Promise<AppUpdateState>
+    check: () => Promise<AppUpdateState>
+    open: () => Promise<{ ok: boolean; error?: string }>
+    onChanged: (cb: (state: AppUpdateState) => void) => () => void
+  }
 }
 
 interface KernelAuthConnectedAccount {
@@ -960,6 +966,17 @@ declare global {
   interface FeedbackResult {
     ok: boolean
     stored: 'remote' | 'local'
+    error?: string
+  }
+
+  interface AppUpdateState {
+    checking: boolean
+    currentVersion: string
+    latestVersion?: string
+    available: boolean
+    releaseUrl?: string
+    downloadUrl?: string
+    checkedAt?: string
     error?: string
   }
 

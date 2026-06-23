@@ -470,6 +470,12 @@ window.y = {
     resize: async () => ({ ok: true }),
     kill: async () => ({ ok: true }),
     onEvent: () => () => undefined
+  },
+  updates: {
+    get: async () => ({ checking: false, currentVersion: '0.0.1', available: false }),
+    check: async () => ({ checking: false, currentVersion: '0.0.1', available: false }),
+    open: async () => ({ ok: true }),
+    onChanged: () => () => undefined
   }
 }
 

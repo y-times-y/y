@@ -5,6 +5,7 @@ import { access } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { trackAnalytics } from './analytics'
+import { cliEnv, resolveCliCommand } from './engine/cliEnv'
 
 const execFileAsync = promisify(execFile)
 
@@ -53,7 +54,18 @@ async function hasKeychainCredential(service: string): Promise<boolean> {
   }
 }
 
-async function isAuthenticated(id: ToolStatus['id']): Promise<boolean> {
+function authStatusLooksSignedIn(output: string): boolean {
+  return !/(not\s+(logged|signed)|logged\s+out|sign\s+in|required|unauthenticated)/iu.test(output.toLowerCase())
+}
+
+async function isAuthenticated(id: ToolStatus['id'], commandPath: string): Promise<boolean> {
+  const args = id === 'codex' ? ['login', 'status'] : ['auth', 'status']
+  try {
+    const result = await execFileAsync(commandPath, args, { env: cliEnv(), timeout: 5000 })
+    return authStatusLooksSignedIn(`${result.stdout}\n${result.stderr}`)
+  } catch {
+    // Fall back to persisted credential checks below.
+  }
   if (id === 'claude-code' && process.platform === 'darwin') {
     return (await hasKeychainCredential('Claude Code-credentials')) || (await hasCredentialFile(id))
   }
@@ -62,8 +74,10 @@ async function isAuthenticated(id: ToolStatus['id']): Promise<boolean> {
 
 async function checkTool(args: Omit<ToolStatus, 'installed' | 'version' | 'authenticated' | 'error'>): Promise<ToolStatus> {
   try {
-    const result = await execFileAsync(args.command, ['--version'], { timeout: 5000 })
-    const authenticated = await isAuthenticated(args.id)
+    const commandPath = await resolveCliCommand(args.command)
+    if (!commandPath) throw new Error(`${args.command} was not found in Terminal or common CLI install paths.`)
+    const result = await execFileAsync(commandPath, ['--version'], { env: cliEnv(), timeout: 5000 })
+    const authenticated = await isAuthenticated(args.id, commandPath)
     return {
       ...args,
       installed: true,
