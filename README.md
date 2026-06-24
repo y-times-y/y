@@ -10,11 +10,26 @@
   </a>
 </p>
 
-**y** is a self-modifying desktop coding-agent app.
+**y** is a malleable desktop coding-agent app.
 
 It is built around a simple idea: software should become malleable while you use it. The main interface is a chat, but the app can reshape its own UI through a protected Modify surface. You can ask y to change how y itself works, keep the change if it renders safely, or roll it back if it does not.
 
 y is not a new agent model. It is a local, chat-first workspace for the coding agents you already use: Claude Code, OpenAI Codex, and other CLI-native agents over time.
+
+## Things to try
+
+- Run Claude Code and Codex side by side from one desktop app.
+- Start separate chats in isolated workspaces so agents can work in parallel without touching the same checkout.
+- Ask Modify to change y's interface live, then review the generated diff before keeping it.
+- Add or adjust app UI controls, layout, copy, and local workflow affordances through Modify.
+- Open the file tree, terminal, and diff views while an agent is working.
+- Revert a Modify change if the new UI is not what you wanted.
+
+## What Modify is
+
+Modify is the part of y that edits y itself. It is a separate chat focused on changing the app interface, not your project code. The change still goes through code and diff review: Modify edits the local Userland UI, y renders it, and you choose whether to keep or revert it.
+
+Modify is not meant to control the protected app core. It should not get access to auth/session internals, analytics controls, privileged host APIs, or the Modify system itself. Those boundaries live in the protected Kernel.
 
 ## Why y exists
 
