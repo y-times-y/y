@@ -112,6 +112,7 @@ const CONFIDENCE = new Set(['low', 'medium', 'high'])
 const STORED = new Set(['remote', 'local'])
 const TOOL_PHASES = new Set(['start', 'end'])
 const ENGINES = new Set(['claude-code', 'codex'])
+const DEFAULT_POSTHOG_PROJECT_API_KEY = 'phc_ob7iCTmKLhjDPDwdRwQRmBBwSWDX3mVwNFVnPwQwXKrJ'
 const DEFAULT_POSTHOG_HOST = 'https://us.i.posthog.com'
 
 let envLoaded = false
@@ -173,7 +174,10 @@ function brickRequestsEndpoint(): string {
 }
 
 function posthogKey(): string {
-  return envValue('POSTHOG_PROJECT_API_KEY', 'VITE_POSTHOG_PROJECT_API_KEY', 'NEXT_PUBLIC_POSTHOG_KEY')
+  return (
+    envValue('POSTHOG_PROJECT_API_KEY', 'VITE_POSTHOG_PROJECT_API_KEY', 'NEXT_PUBLIC_POSTHOG_KEY') ||
+    DEFAULT_POSTHOG_PROJECT_API_KEY
+  )
 }
 
 function posthogHost(): string {
