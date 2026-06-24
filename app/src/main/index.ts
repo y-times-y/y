@@ -15,6 +15,7 @@ import { join } from 'path'
 import { pathToFileURL } from 'url'
 import { copyFile, mkdir, readFile, writeFile, stat, rm } from 'fs/promises'
 import { watch } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { startSession, sendToSession, commandSession, cancelSession, listEngines, listModels } from './engine'
@@ -41,6 +42,7 @@ import {
 const AUTH_CALLBACK_PROTOCOL = 'y'
 const USERLAND_FRAME_PROTOCOL = 'y-userland'
 const RESET_LOCAL_DATA_ARG = '--reset-y-data'
+const USERLAND_SEED_METADATA_VERSION = 1
 const DEFAULT_HEXCLAVE_PROJECT_ID = 'eeb236a6-5299-4457-8819-d15a1728ca38'
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
 
@@ -254,6 +256,59 @@ function userlandFile(): string {
   return join(userlandDir(), 'panel.tsx')
 }
 
+type UserlandSeedMetadata = {
+  version: number
+  seedHash: string
+  seedVersion: string
+  updatedAt: string
+  customized: boolean
+  pendingSeedHash?: string
+  pendingSeedVersion?: string
+}
+
+function userlandSeedMetadataFile(): string {
+  return join(app.getPath('userData'), 'userland-seed.json')
+}
+
+function sha256(source: string): string {
+  return createHash('sha256').update(source).digest('hex')
+}
+
+async function readUserlandSeedMetadata(): Promise<UserlandSeedMetadata | null> {
+  try {
+    const raw = await readFile(userlandSeedMetadataFile(), 'utf-8')
+    const parsed = JSON.parse(raw) as Partial<UserlandSeedMetadata>
+    if (parsed.version !== USERLAND_SEED_METADATA_VERSION || typeof parsed.seedHash !== 'string') return null
+    return {
+      version: USERLAND_SEED_METADATA_VERSION,
+      seedHash: parsed.seedHash,
+      seedVersion: typeof parsed.seedVersion === 'string' ? parsed.seedVersion : 'unknown',
+      updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : new Date().toISOString(),
+      customized: Boolean(parsed.customized),
+      pendingSeedHash: typeof parsed.pendingSeedHash === 'string' ? parsed.pendingSeedHash : undefined,
+      pendingSeedVersion: typeof parsed.pendingSeedVersion === 'string' ? parsed.pendingSeedVersion : undefined
+    }
+  } catch {
+    return null
+  }
+}
+
+async function writeUserlandSeedMetadata(metadata: Omit<UserlandSeedMetadata, 'version' | 'updatedAt'>): Promise<void> {
+  await writeFile(
+    userlandSeedMetadataFile(),
+    JSON.stringify(
+      {
+        version: USERLAND_SEED_METADATA_VERSION,
+        ...metadata,
+        updatedAt: new Date().toISOString()
+      },
+      null,
+      2
+    ),
+    'utf-8'
+  )
+}
+
 function isKnownLightUserlandDefault(source: string): boolean {
   return (
     source.includes('data-testid="y-app"') &&
@@ -273,14 +328,46 @@ function userlandRepairBackupFile(): string {
 async function ensureUserland(): Promise<void> {
   await mkdir(userlandDir(), { recursive: true })
   const seed = await readUserlandSeed()
+  const seedHash = sha256(seed)
+  const seedVersion = app.getVersion()
   let needsWrite = false
+  let metadata: UserlandSeedMetadata | null = null
   try {
     const live = await readFile(userlandFile(), 'utf-8')
+    const liveHash = sha256(live)
+    metadata = await readUserlandSeedMetadata()
     if (isKnownLightUserlandDefault(live)) {
       await copyFile(userlandFile(), userlandRepairBackupFile()).catch((err) => {
         console.warn('[y] Userland dark repair backup unavailable:', err)
       })
       needsWrite = true
+    } else if (metadata && metadata.seedHash !== seedHash && liveHash === metadata.seedHash) {
+      // The user never changed the previous bundled Userland. Move them to the
+      // new bundled seed automatically.
+      needsWrite = true
+    } else if (liveHash === seedHash && (!metadata || metadata.seedHash !== seedHash || metadata.customized)) {
+      await writeUserlandSeedMetadata({
+        seedHash,
+        seedVersion,
+        customized: false
+      }).catch((err) => {
+        console.warn('[y] Userland seed metadata unavailable:', err)
+      })
+    } else if (!metadata || metadata.seedHash !== seedHash || metadata.customized !== (liveHash !== seedHash)) {
+      // Existing 0.0.1 installs have no metadata. Mark customized Userland as
+      // user-owned and record newer bundled seeds as pending instead of
+      // overwriting local UI changes.
+      await writeUserlandSeedMetadata({
+        seedHash: metadata?.seedHash || seedHash,
+        seedVersion: metadata?.seedVersion || seedVersion,
+        customized: liveHash !== (metadata?.seedHash || seedHash),
+        pendingSeedHash:
+          metadata && liveHash !== metadata.seedHash && metadata.seedHash !== seedHash ? seedHash : undefined,
+        pendingSeedVersion:
+          metadata && liveHash !== metadata.seedHash && metadata.seedHash !== seedHash ? seedVersion : undefined
+      }).catch((err) => {
+        console.warn('[y] Userland seed metadata unavailable:', err)
+      })
     }
     // Dev: pull kernel seed updates into the live Userland file when seed is newer.
     if (!needsWrite && is.dev) {
@@ -292,6 +379,13 @@ async function ensureUserland(): Promise<void> {
   }
   if (needsWrite) {
     await writeFile(userlandFile(), seed, 'utf-8')
+    await writeUserlandSeedMetadata({
+      seedHash,
+      seedVersion,
+      customized: false
+    }).catch((err) => {
+      console.warn('[y] Userland seed metadata unavailable:', err)
+    })
   }
   // Native Git is required for checkpoints and rollback. Keep boot resilient so
   // the UI can explain a missing installation instead of crashing at startup.
@@ -437,7 +531,15 @@ app.whenReady().then(async () => {
   ipcMain.handle('userland:resetToSeed', async () => {
     try {
       const seed = await readUserlandSeed()
+      const seedHash = sha256(seed)
       await writeFile(userlandFile(), seed, 'utf-8')
+      await writeUserlandSeedMetadata({
+        seedHash,
+        seedVersion: app.getVersion(),
+        customized: false
+      }).catch((err) => {
+        console.warn('[y] Userland seed metadata unavailable:', err)
+      })
       await ulSnapshot(userlandDir(), 'original app').catch((err) => {
         console.warn('[y] Userland reset snapshot unavailable:', err)
       })
