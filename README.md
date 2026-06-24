@@ -10,6 +10,8 @@
   </a>
 </p>
 
+https://github.com/user-attachments/assets/24f10277-bb0e-4c3f-8a05-6833363d07a2
+
 **y** is a malleable desktop coding-agent app.
 
 It is built around a simple idea: software should become malleable while you use it. The main interface is a chat, but the app can reshape its own UI through a protected Modify surface. You can ask y to change how y itself works, keep the change if it renders safely, or roll it back if it does not.
