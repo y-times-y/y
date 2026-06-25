@@ -20,9 +20,9 @@ y is not a new agent model. It is a local, chat-first workspace for the coding a
 
 ## Privacy at a glance
 
-I am not collecting your chat data. Project files, terminal commands, chat contents, and agent prompts are not collected or stored by y.
+y does not collect your chat data. Project files, terminal commands, chat contents, and agent prompts are not collected or stored by y.
 
-y only uses product analytics for basic app health and usage signals, like sign-in state, feature usage, feedback, and missing-brick requests. "Local" means Claude Code and Codex run on the user's machine through their official CLIs; y still uses login for account-based product features and basic usage analytics.
+y only uses product analytics for basic app health and usage signals, like sign-in state, feature usage, feedback, and missing-brick requests. "Local" means Claude Code and Codex run on the user's machine through their official CLIs. Login supports account-based product features and basic usage analytics.
 
 ## Things to try
 
