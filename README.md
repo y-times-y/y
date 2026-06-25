@@ -27,7 +27,7 @@ y only uses product analytics for basic app health and usage signals, like sign-
 ## Things to try
 
 - Run Claude Code and Codex side by side from one desktop app.
-- Start separate chats in isolated workspaces so agents can work in parallel without touching the same checkout.
+- Run `git init`, then start separate chats in isolated workspaces so agents can work in parallel without touching the same checkout.
 - Ask Modify to change y's interface live, then review the generated diff before keeping it.
 - Add or adjust app UI controls, layout, copy, and local workflow affordances through Modify.
 - Open the file tree, terminal, and diff views while an agent is working.
