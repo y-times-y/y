@@ -106,7 +106,9 @@ The generated app artifacts are written to `app/dist/` and are intentionally not
 
 ## Privacy and analytics
 
-y keeps the coding workflow local. Project files, terminal commands, and agent prompts are not sent to y's product analytics.
+y keeps the coding workflow local. Project files, terminal commands, chat contents, and agent prompts are not collected or stored by y, and they are not sent to y's product analytics.
+
+"Local" means Claude Code and Codex run on the user's machine through their official CLIs. y still uses login for account-based product features and basic app usage analytics.
 
 Product analytics are for app usage health: sign-in state, feature usage, feedback, and missing-brick requests. Missing-brick reports are structured and should describe the missing capability, not the user's private prompt or source code.
 
