@@ -1,7 +1,7 @@
 # y
 
 <p align="center">
-  <img src="docs/assets/y-desktop.png" alt="y desktop app showing a chat-first coding workspace" width="100%" />
+  <img src="docs/assets/y-readme-hero.png" alt="y desktop app showing a chat-first coding workspace" width="100%" />
 </p>
 
 https://github.com/user-attachments/assets/24f10277-bb0e-4c3f-8a05-6833363d07a2
