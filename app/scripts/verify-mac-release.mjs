@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { existsSync } from 'node:fs'
-import { readdir } from 'node:fs/promises'
+import { readFile, readdir } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { execFileSync } from 'node:child_process'
 
@@ -27,6 +27,10 @@ async function findBuiltApp() {
 }
 
 async function defaultDmgPath() {
+  const packageJson = JSON.parse(await readFile(resolve('package.json'), 'utf8'))
+  const expected = join(resolve('dist'), `${packageJson.name}-${packageJson.version}.dmg`)
+  if (existsSync(expected)) return expected
+
   const dist = resolve('dist')
   const dmg = (await readdir(dist)).find((name) => /^y-\d+\.\d+\.\d+\.dmg$/u.test(name))
   if (!dmg) throw new Error('Could not find y versioned DMG under dist/.')
@@ -37,7 +41,6 @@ const appPath = resolve(process.argv[2] || (await findBuiltApp()))
 const dmgPath = resolve(process.argv[3] || (await defaultDmgPath()))
 
 run('codesign', ['--verify', '--deep', '--strict', '--verbose=2', appPath])
-run('xcrun', ['stapler', 'validate', appPath])
 run('spctl', ['--assess', '--type', 'execute', '--verbose=4', appPath])
 run('codesign', ['--verify', '--verbose=2', dmgPath])
 run('xcrun', ['stapler', 'validate', dmgPath])

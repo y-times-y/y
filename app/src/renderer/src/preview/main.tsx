@@ -3,12 +3,22 @@ import { createRoot } from 'react-dom/client'
 
 const params = new URLSearchParams(window.location.search)
 ;(window as Window & { __Y_PREVIEW__?: boolean }).__Y_PREVIEW__ = true
+window.yTest = { bypassAuth: true }
 window.localStorage.setItem('y.onboarding.done', 'true')
 window.localStorage.setItem('y.onboarding.cli.v2.done', 'true')
 const engineListeners: Array<(payload: EngineEventPayload) => void> = []
 const projectFileListeners: Array<(payload: { projectId: string; paths: string[] }) => void> = []
 const listedDirectories: string[] = []
 let previewClipboard = ''
+let previewUpdateState: AppUpdateState = {
+  phase: params.get('update') === 'available' ? 'available' : 'idle',
+  checking: false,
+  currentVersion: '0.0.1',
+  latestVersion: params.get('updateVersion') || (params.get('update') === 'available' ? '0.0.2' : undefined),
+  available: params.get('update') === 'available',
+  progress: undefined
+}
+const previewUpdateListeners: Array<(state: AppUpdateState) => void> = []
 ;(window as Window & { __listedDirectories?: string[] }).__listedDirectories = listedDirectories
 ;(window as Window & { __emitProjectFilesChanged?: (projectId?: string, paths?: string[]) => void }).__emitProjectFilesChanged = (
   projectId = 'preview-ytimesy',
@@ -155,6 +165,14 @@ window.y = {
     checkpoint: async () => ({ ok: true, checkpointId: crypto.randomUUID() }),
     restoreCheckpoint: async (checkpointId) => ({ ok: true, checkpointId }),
     resetToSeed: async () => ({ ok: true }),
+    restoreDefaultResetBackup: async () => ({ ok: true }),
+    seedStatus: async () => ({
+      ok: true,
+      customized: false,
+      seedVersion: '0.0.1',
+      pending: false,
+      restoreDefaultAvailable: false
+    }),
     onChanged: () => () => undefined
   },
   modify: {
@@ -472,14 +490,40 @@ window.y = {
     onEvent: () => () => undefined
   },
   updates: {
-    get: async () => ({ checking: false, currentVersion: '0.0.1', available: false }),
-    check: async () => ({ checking: false, currentVersion: '0.0.1', available: false }),
-    open: async () => ({ ok: true }),
-    onChanged: () => () => undefined
+    get: async () => previewUpdateState,
+    check: async () => previewUpdateState,
+    open: async () => {
+      previewUpdateState = {
+        ...previewUpdateState,
+        phase: params.get('updateError') ? 'error' : 'installing',
+        error: params.get('updateError') || undefined,
+        progress: params.get('updateError') ? previewUpdateState.progress : 100
+      }
+      for (const listener of previewUpdateListeners) listener(previewUpdateState)
+      return params.get('updateError') ? { ok: false, error: params.get('updateError') || 'Update failed.' } : { ok: true }
+    },
+    onChanged: (cb) => {
+      previewUpdateListeners.push(cb)
+      return () => {
+        const index = previewUpdateListeners.indexOf(cb)
+        if (index !== -1) previewUpdateListeners.splice(index, 1)
+      }
+    }
   }
 }
 
 async function boot(): Promise<void> {
+  if (params.get('mode') === 'shell') {
+    await import('../assets/main.css')
+    const { default: App } = await import('../App')
+    createRoot(document.getElementById('root')!).render(
+      <StrictMode>
+        <App />
+      </StrictMode>
+    )
+    return
+  }
+
   if (params.get('mode') === 'modify') {
     await import('../assets/main.css')
     const { default: ModifyChat } = await import('../kernel/ModifyChat')

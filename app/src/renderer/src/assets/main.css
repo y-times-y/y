@@ -691,57 +691,142 @@ code {
   transition: width 0.26s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.26s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.kernel-update-notice {
+.kernel-notice-stack {
   position: fixed;
-  right: 24px;
-  bottom: 24px;
+  right: 18px;
+  bottom: 18px;
   z-index: 70;
-  width: min(340px, calc(100vw - 48px));
-  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 12px;
+  width: min(430px, calc(100vw - 36px));
+  -webkit-app-region: no-drag;
+}
+
+.kernel-update-notice {
+  width: min(300px, calc(100vw - 36px));
+  padding: 12px;
   border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 14px;
+  border-radius: 13px;
   background: #050505;
   box-shadow: 0 18px 60px rgba(0, 0, 0, 0.45);
   color: rgba(255, 255, 255, 0.92);
-  -webkit-app-region: no-drag;
+}
+
+.kernel-userland-update-notice {
+  width: 100%;
+}
+
+.kernel-userland-update-list {
+  display: grid;
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.kernel-userland-update-choice {
+  display: grid;
+  grid-template-columns: 16px 1fr;
+  gap: 8px;
+  align-items: start;
+  padding: 9px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.045);
+  cursor: pointer;
+}
+
+.kernel-userland-update-choice input {
+  width: 14px;
+  height: 14px;
+  margin: 2px 0 0;
+  accent-color: #ffffff;
+  cursor: pointer;
+}
+
+.kernel-userland-update-choice strong,
+.kernel-userland-update-choice small {
+  display: block;
+}
+
+.kernel-userland-update-choice strong {
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 12px;
+}
+
+.kernel-userland-update-choice small {
+  margin-top: 3px;
+  color: rgba(255, 255, 255, 0.56);
+  font-size: 11px;
+  line-height: 1.3;
 }
 
 .kernel-update-badge {
   display: inline-flex;
   align-items: center;
-  height: 24px;
-  padding: 0 9px;
+  height: 22px;
+  padding: 0 8px;
   border-radius: 999px;
   background: #000000;
   border: 1px solid rgba(255, 255, 255, 0.18);
   color: #ffffff;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
 .kernel-update-copy {
-  margin-top: 10px;
+  margin-top: 9px;
   color: rgba(255, 255, 255, 0.72);
-  font-size: 14px;
-  line-height: 1.4;
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.kernel-update-error {
+  margin-top: 8px;
+  color: #ff7b7b;
+  font-size: 11px;
+  line-height: 1.35;
 }
 
 .kernel-update-actions {
   display: flex;
-  gap: 8px;
-  margin-top: 14px;
+  gap: 7px;
+  margin-top: 11px;
+}
+
+.kernel-userland-update-notice .kernel-userland-primary-actions {
+  display: grid;
+  grid-template-columns: 1.25fr 1fr;
+}
+
+.kernel-userland-update-notice .kernel-userland-review-actions {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+}
+
+.kernel-userland-update-notice .kernel-restore-actions,
+.kernel-userland-update-notice .kernel-default-confirm-actions {
+  grid-template-columns: 1fr auto;
 }
 
 .kernel-update-actions button {
-  height: 40px;
-  border-radius: 10px;
+  height: 34px;
+  border-radius: 9px;
   border: 1px solid rgba(255, 255, 255, 0.12);
-  padding: 0 14px;
+  padding: 0 12px;
   font: inherit;
+  font-size: 13px;
   font-weight: 750;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.kernel-update-actions button:disabled {
   cursor: default;
+  opacity: 0.72;
 }
 
 .kernel-update-now {
@@ -753,6 +838,22 @@ code {
 .kernel-update-later {
   background: rgba(255, 255, 255, 0.06);
   color: rgba(255, 255, 255, 0.7);
+}
+
+.kernel-update-text-action {
+  margin-top: 10px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.42);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.kernel-update-text-action:hover {
+  color: rgba(255, 255, 255, 0.72);
 }
 .modify-resize-handle {
   position: absolute;

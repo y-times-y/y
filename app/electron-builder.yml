@@ -10,6 +10,10 @@ files:
   - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
   - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+  - '!dist/**'
+  - '!e2e/**'
+  - '!playwright-report/**'
+  - '!test-results/**'
 asarUnpack:
   - resources/**
 extraResources:
@@ -17,6 +21,8 @@ extraResources:
     to: engines
     filter:
       - '*.png'
+  - from: userland-update-manifest.json
+    to: userland-update-manifest.json
 win:
   executableName: y
 nsis:
@@ -53,4 +59,4 @@ appImage:
 npmRebuild: false
 publish:
   provider: generic
-  url: https://example.com/auto-updates
+  url: https://github.com/y-times-y/y/releases/latest/download

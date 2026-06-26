@@ -5475,7 +5475,7 @@ export default function Chat() {
 
       `}</style>
 
-      <div className={'y-app' + (sidebarOpen ? '' : ' sidebar-closed')} data-testid="y-app">
+      <div className={'y-app' + (sidebarOpen ? '' : ' sidebar-closed')} data-testid="y-app" data-y-seed="0.0.2">
         <div className="y-sidebar-toggle-fixed">
           <div className="y-sidebar-toggle-slot">
             <button
@@ -6148,7 +6148,7 @@ export default function Chat() {
               inputRef={composerInputRef}
               isDropTarget={dragActive}
               dropOverlay={<Icon name="files" size={22} />}
-              placeholder={composerMode === 'goal' ? 'Write the goal for this chat...' : !hasProject ? 'Open a folder to start...' : sessionId ? 'Ask for follow-up changes' : 'Starting engine...'}
+              placeholder={composerMode === 'goal' ? 'Write the goal for this chat...' : !hasProject ? 'Open a folder to start...' : sessionId ? 'Make something you want' : 'Starting engine...'}
               onInput={handleComposerInput}
               onPaste={handleComposerPaste}
               onKeyDown={(ev) => {

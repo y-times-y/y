@@ -1,0 +1,11 @@
+{
+  "version": "0.0.2",
+  "items": [
+    {
+      "id": "update-checklist-flow",
+      "title": "Safer app UI update flow",
+      "description": "Shows new app interface changes as a checklist instead of replacing your local interface during startup.",
+      "required": false
+    }
+  ]
+}

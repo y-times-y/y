@@ -418,6 +418,8 @@ interface YApi {
     checkpoint: () => Promise<{ ok: boolean; checkpointId?: string; error?: string }>
     restoreCheckpoint: (checkpointId: string) => Promise<{ ok: boolean; checkpointId?: string; error?: string }>
     resetToSeed: () => Promise<{ ok: boolean; error?: string }>
+    restoreDefaultResetBackup: () => Promise<{ ok: boolean; error?: string }>
+    seedStatus: () => Promise<UserlandSeedStatus>
     onChanged: (cb: () => void) => () => void
   }
   modify: {
@@ -970,6 +972,7 @@ declare global {
   }
 
   interface AppUpdateState {
+    phase?: 'idle' | 'checking' | 'not-available' | 'available' | 'downloading' | 'downloaded' | 'installing' | 'error'
     checking: boolean
     currentVersion: string
     latestVersion?: string
@@ -977,6 +980,22 @@ declare global {
     releaseUrl?: string
     downloadUrl?: string
     checkedAt?: string
+    error?: string
+    progress?: number
+  }
+
+  interface UserlandSeedStatus {
+    ok: boolean
+    customized: boolean
+    seedVersion: string
+    pending: boolean
+    pendingSeedHash?: string
+    pendingSeedVersion?: string
+    updateManifest?: {
+      version: string
+      items: { id: string; title: string; description: string; required: boolean }[]
+    }
+    restoreDefaultAvailable: boolean
     error?: string
   }
 
@@ -998,5 +1017,8 @@ declare global {
     api: unknown
     y: YApi
     yKernelAuth: KernelAuthBridge
+    yTest?: {
+      bypassAuth?: boolean
+    }
   }
 }

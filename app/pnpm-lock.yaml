@@ -16,7 +16,7 @@ importers:
         version: 4.0.0(electron@39.8.10)
       '@hexclave/react':
         specifier: ^1.0.23
-        version: 1.0.23(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(zod@4.4.3)
+        version: 1.0.23(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(buffer@6.0.3)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(zod@4.4.3)
       '@xterm/addon-fit':
         specifier: ^0.11.0
         version: 0.11.0
@@ -26,6 +26,9 @@ importers:
       better-sqlite3:
         specifier: ^12.11.1
         version: 12.11.1
+      electron-updater:
+        specifier: ^6.8.9
+        version: 6.8.9
       esbuild:
         specifier: ^0.28.0
         version: 0.28.0
@@ -56,7 +59,7 @@ importers:
         version: 2.0.0(@types/node@22.19.20)
       '@hexclave/cli':
         specifier: ^1.0.23
-        version: 1.0.23(@types/node@22.19.20)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react-hook-form@7.80.0(react@19.2.7))(react@19.2.7)(vite@7.3.5(@types/node@22.19.20)(jiti@2.7.0)(tsx@4.22.4))(yup@1.7.1)(zod@4.4.3)
+        version: 1.0.23(@types/node@22.19.20)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(buffer@6.0.3)(react-dom@19.2.7(react@19.2.7))(react-hook-form@7.80.0(react@19.2.7))(react@19.2.7)(vite@7.3.5(@types/node@22.19.20)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0))(yup@1.7.1)(zod@4.4.3)
       '@playwright/test':
         specifier: ^1.55.0
         version: 1.60.0
@@ -71,7 +74,7 @@ importers:
         version: 19.2.3(@types/react@19.2.17)
       '@vitejs/plugin-react':
         specifier: ^5.1.1
-        version: 5.2.0(vite@7.3.5(@types/node@22.19.20)(jiti@2.7.0)(tsx@4.22.4))
+        version: 5.2.0(vite@7.3.5(@types/node@22.19.20)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0))
       electron:
         specifier: ^39.2.6
         version: 39.8.10
@@ -80,7 +83,7 @@ importers:
         version: 26.15.0(electron-builder-squirrel-windows@26.15.0)
       electron-vite:
         specifier: ^5.0.0
-        version: 5.0.0(vite@7.3.5(@types/node@22.19.20)(jiti@2.7.0)(tsx@4.22.4))
+        version: 5.0.0(vite@7.3.5(@types/node@22.19.20)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0))
       eslint:
         specifier: ^9.39.1
         version: 9.39.4(jiti@2.7.0)
@@ -107,7 +110,7 @@ importers:
         version: 5.9.3
       vite:
         specifier: ^7.2.6
-        version: 7.3.5(@types/node@22.19.20)(jiti@2.7.0)(tsx@4.22.4)
+        version: 7.3.5(@types/node@22.19.20)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0)
 
 packages:
 
@@ -2622,6 +2625,9 @@ packages:
   buffer@5.7.1:
     resolution: {integrity: sha512-EHcyIPBQ4BSGlvjB16k5KgAJ27CIsHY/2JBmCRReo48y9rQ3MaUzWX3KVlBa4U7MyX02HdVj0K7C3WaB3ju7FQ==}
 
+  buffer@6.0.3:
+    resolution: {integrity: sha512-FTiCpNxtwiZZHEZbcbTIcZjERVICn9yq/pDFkTl95/AxzD1naBctN7YO68riM/gLSDY7sdrMby8hofADYuuqOA==}
+
   builder-util-runtime@9.7.0:
     resolution: {integrity: sha512-g/kR520giAFYkSXTzcmF3kqQq7wi8F6N6SzeDgZrqTBN+VHdmgWOyTdD1yD7AATDId/yXLvuP34CxW46/BwCdw==}
     engines: {node: '>=12.0.0'}
@@ -3001,6 +3007,9 @@ packages:
 
   electron-to-chromium@1.5.368:
     resolution: {integrity: sha512-7RckJJK4uESJF9PxvfMWd3TGqIiieUTG4HxnKaKuIpGbcr+r2ZEB3g2gAhCP3Fqm42vJSzLfgab9eva/C4/XVw==}
+
+  electron-updater@6.8.9:
+    resolution: {integrity: sha512-ZhVxM9iGONUpZGI1FxdMRgJjUFXi7AYGVa5PwKlO1tV1/4zDxQmfKpXOHVztKrd6L9rLcFjERvi1Mf2vxyTkig==}
 
   electron-vite@5.0.0:
     resolution: {integrity: sha512-OHp/vjdlubNlhNkPkL/+3JD34ii5ov7M0GpuXEVdQeqdQ3ulvVR7Dg/rNBLfS5XPIFwgoBLDf9sjjrL+CuDyRQ==}
@@ -3865,6 +3874,13 @@ packages:
   locate-path@6.0.0:
     resolution: {integrity: sha512-iPZK6eYjbxRu3uB4/WZ3EsEIMJFMqAoopl3R+zuq0UjcAm/MO6KCweDgPfP3elTztoKP3KtnVHxTn2NHBSDVUw==}
     engines: {node: '>=10'}
+
+  lodash.escaperegexp@4.1.2:
+    resolution: {integrity: sha512-TM9YBvyC84ZxE3rgfefxUWiQKLilstD6k7PTGt6wfbtXF8ixIJLOL3VYyV/z+ZiPLsVxAsKAFVwWlWeb2Y8Yyw==}
+
+  lodash.isequal@4.5.0:
+    resolution: {integrity: sha512-pDo3lu8Jhfjqls6GkMgpahsF9kCyayhgykjyLMNFTKWrpVdAQtYyB4muAMWozBB4ig/dtWAmsMxLEI8wuz+DYQ==}
+    deprecated: This package is deprecated. Use require('node:util').isDeepStrictEqual instead.
 
   lodash.merge@4.6.2:
     resolution: {integrity: sha512-0KpjqXRVvrYyCsX1swR/XTK0va6VQkQM6MNo7PqW77ByjAhoARA8EfrP1N4+KlKj8YS0ZUCtRT/YUuhyYDujIQ==}
@@ -4967,6 +4983,9 @@ packages:
   tiny-case@1.0.3:
     resolution: {integrity: sha512-Eet/eeMhkO6TX8mnUteS9zgPbUMQa4I6Kkp5ORiBD5476/m+PIRiumP5tmh5ioJpH7k51Kehawy2UDfsnxxY8Q==}
 
+  tiny-typed-emitter@2.1.0:
+    resolution: {integrity: sha512-qVtvMxeXbVej0cQWKqVSSAHmKZEHAvxdF8HEUBFWts8h+xEo5m/lEiPakuyZ3BnCBjOD8i24kzNOiOLLgsSxhA==}
+
   tinyglobby@0.2.17:
     resolution: {integrity: sha512-wXR/dYpcqKmfWpEdZjiKJOwCNFndD0DMnrW/cYjVGttEkBfVgcLFHoNrlj47mjOVic9yyNu65alsgF4NQyTa2g==}
     engines: {node: '>=12.0.0'}
@@ -5288,6 +5307,11 @@ packages:
   yallist@5.0.0:
     resolution: {integrity: sha512-YgvUTfwqyc7UXVMrB+SImsVYSmTS8X/tSrtdNZMImM+n7+QTriRXyXim0mBrTXNeqzVF0KWGgHPeiyViFFrNDw==}
     engines: {node: '>=18'}
+
+  yaml@2.9.0:
+    resolution: {integrity: sha512-2AvhNX3mb8zd6Zy7INTtSpl1F15HW6Wnqj0srWlkKLcpYl/gMIMJiyuGq2KeI2YFxUPjdlB+3Lc10seMLtL4cA==}
+    engines: {node: '>= 14.6'}
+    hasBin: true
 
   yargs-parser@18.1.3:
     resolution: {integrity: sha512-o50j0JeToy/4K6OZcaQmW6lyXXKhq7csREXcDwk2omFPJEwUNOVtJKvmDr9EI1fAJZUyZcRF7kxGBWmRXudrCQ==}
@@ -5848,7 +5872,7 @@ snapshots:
       node-gyp: 11.5.0
       ora: 5.4.1
       read-binary-file-arch: 1.0.6
-      semver: 7.7.4
+      semver: 7.8.2
       tar: 7.5.16
       yargs: 17.7.2
     transitivePeerDependencies:
@@ -6174,13 +6198,13 @@ snapshots:
 
   '@floating-ui/utils@0.2.11': {}
 
-  '@hexclave/cli@1.0.23(@types/node@22.19.20)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react-hook-form@7.80.0(react@19.2.7))(react@19.2.7)(vite@7.3.5(@types/node@22.19.20)(jiti@2.7.0)(tsx@4.22.4))(yup@1.7.1)(zod@4.4.3)':
+  '@hexclave/cli@1.0.23(@types/node@22.19.20)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(buffer@6.0.3)(react-dom@19.2.7(react@19.2.7))(react-hook-form@7.80.0(react@19.2.7))(react@19.2.7)(vite@7.3.5(@types/node@22.19.20)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0))(yup@1.7.1)(zod@4.4.3)':
     dependencies:
-      '@hexclave/js': 1.0.23(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react-hook-form@7.80.0(react@19.2.7))(react@19.2.7)
-      '@hexclave/shared': 1.0.23(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(yup@1.7.1)
-      '@hexclave/shared-backend': 1.0.23(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(yup@1.7.1)(zod@4.4.3)
+      '@hexclave/js': 1.0.23(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(buffer@6.0.3)(react-dom@19.2.7(react@19.2.7))(react-hook-form@7.80.0(react@19.2.7))(react@19.2.7)
+      '@hexclave/shared': 1.0.23(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(buffer@6.0.3)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(yup@1.7.1)
+      '@hexclave/shared-backend': 1.0.23(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(buffer@6.0.3)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(yup@1.7.1)(zod@4.4.3)
       '@inquirer/prompts': 7.10.1(@types/node@22.19.20)
-      '@sentry/node': 10.59.0(vite@7.3.5(@types/node@22.19.20)(jiti@2.7.0)(tsx@4.22.4))
+      '@sentry/node': 10.59.0(vite@7.3.5(@types/node@22.19.20)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0))
       commander: 13.1.0
       extract-zip: 2.0.1
       jiti: 2.7.0
@@ -6199,9 +6223,9 @@ snapshots:
       - yup
       - zod
 
-  '@hexclave/js@1.0.23(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react-hook-form@7.80.0(react@19.2.7))(react@19.2.7)':
+  '@hexclave/js@1.0.23(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(buffer@6.0.3)(react-dom@19.2.7(react@19.2.7))(react-hook-form@7.80.0(react@19.2.7))(react@19.2.7)':
     dependencies:
-      '@hexclave/shared': 1.0.23(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(yup@1.7.1)
+      '@hexclave/shared': 1.0.23(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(buffer@6.0.3)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(yup@1.7.1)
       '@hookform/resolvers': 5.4.0(react-hook-form@7.80.0(react@19.2.7))
       '@oslojs/otp': 1.1.0
       '@simplewebauthn/browser': 13.3.0
@@ -6224,11 +6248,11 @@ snapshots:
       - react-hook-form
       - supports-color
 
-  '@hexclave/react@1.0.23(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(zod@4.4.3)':
+  '@hexclave/react@1.0.23(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(buffer@6.0.3)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(zod@4.4.3)':
     dependencies:
       '@ai-sdk/react': 3.0.210(react@19.2.7)(zod@4.4.3)
-      '@hexclave/shared': 1.0.23(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(yup@1.7.1)
-      '@hexclave/ui': 1.0.23(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(yup@1.7.1)
+      '@hexclave/shared': 1.0.23(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(buffer@6.0.3)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(yup@1.7.1)
+      '@hexclave/ui': 1.0.23(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(buffer@6.0.3)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(yup@1.7.1)
       '@hookform/resolvers': 5.4.0(react-hook-form@7.80.0(react@19.2.7))
       '@oslojs/otp': 1.1.0
       '@simplewebauthn/browser': 13.3.0
@@ -6261,10 +6285,10 @@ snapshots:
       - tailwindcss
       - zod
 
-  '@hexclave/shared-backend@1.0.23(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(yup@1.7.1)(zod@4.4.3)':
+  '@hexclave/shared-backend@1.0.23(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(buffer@6.0.3)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(yup@1.7.1)(zod@4.4.3)':
     dependencies:
       '@anthropic-ai/claude-agent-sdk': 0.2.141(zod@4.4.3)
-      '@hexclave/shared': 1.0.23(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(yup@1.7.1)
+      '@hexclave/shared': 1.0.23(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(buffer@6.0.3)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(yup@1.7.1)
       jiti: 2.7.0
     transitivePeerDependencies:
       - '@cfworker/json-schema'
@@ -6277,7 +6301,7 @@ snapshots:
       - yup
       - zod
 
-  '@hexclave/shared@1.0.23(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(yup@1.7.1)':
+  '@hexclave/shared@1.0.23(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(buffer@6.0.3)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(yup@1.7.1)':
     dependencies:
       '@aws-sdk/client-kms': 3.1073.0
       '@aws-sdk/credential-provider-web-identity': 3.972.54
@@ -6291,7 +6315,7 @@ snapshots:
       '@vercel/functions': 2.2.13(@aws-sdk/credential-provider-web-identity@3.972.54)
       async-mutex: 0.5.0
       bcryptjs: 3.0.3
-      crc: 4.3.2
+      crc: 4.3.2(buffer@6.0.3)
       elliptic: 6.6.1
       esbuild-wasm: 0.20.2
       ip-regex: 5.0.0
@@ -6309,9 +6333,9 @@ snapshots:
       - buffer
       - supports-color
 
-  '@hexclave/ui@1.0.23(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(yup@1.7.1)':
+  '@hexclave/ui@1.0.23(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(buffer@6.0.3)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(yup@1.7.1)':
     dependencies:
-      '@hexclave/shared': 1.0.23(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(yup@1.7.1)
+      '@hexclave/shared': 1.0.23(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(buffer@6.0.3)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(yup@1.7.1)
       '@radix-ui/react-accordion': 1.2.14(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       '@radix-ui/react-alert-dialog': 1.1.17(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       '@radix-ui/react-aspect-ratio': 1.1.10(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
@@ -7452,7 +7476,7 @@ snapshots:
       '@opentelemetry/instrumentation': 0.214.0(@opentelemetry/api@1.9.1)
       '@opentelemetry/sdk-trace-base': 2.8.0(@opentelemetry/api@1.9.1)
 
-  '@sentry/node@10.59.0(vite@7.3.5(@types/node@22.19.20)(jiti@2.7.0)(tsx@4.22.4))':
+  '@sentry/node@10.59.0(vite@7.3.5(@types/node@22.19.20)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0))':
     dependencies:
       '@opentelemetry/api': 1.9.1
       '@opentelemetry/core': 2.8.0(@opentelemetry/api@1.9.1)
@@ -7462,7 +7486,7 @@ snapshots:
       '@sentry/core': 10.59.0
       '@sentry/node-core': 10.59.0(@opentelemetry/api@1.9.1)(@opentelemetry/core@2.8.0(@opentelemetry/api@1.9.1))(@opentelemetry/instrumentation@0.214.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.8.0(@opentelemetry/api@1.9.1))
       '@sentry/opentelemetry': 10.59.0(@opentelemetry/api@1.9.1)(@opentelemetry/core@2.8.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.8.0(@opentelemetry/api@1.9.1))
-      '@sentry/server-utils': 10.59.0(vite@7.3.5(@types/node@22.19.20)(jiti@2.7.0)(tsx@4.22.4))
+      '@sentry/server-utils': 10.59.0(vite@7.3.5(@types/node@22.19.20)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0))
       import-in-the-middle: 3.1.0
     transitivePeerDependencies:
       - '@opentelemetry/exporter-trace-otlp-http'
@@ -7477,7 +7501,7 @@ snapshots:
       '@sentry/conventions': 0.12.0
       '@sentry/core': 10.59.0
 
-  '@sentry/server-utils@10.59.0(vite@7.3.5(@types/node@22.19.20)(jiti@2.7.0)(tsx@4.22.4))':
+  '@sentry/server-utils@10.59.0(vite@7.3.5(@types/node@22.19.20)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0))':
     dependencies:
       '@apm-js-collab/code-transformer': 0.15.0
       '@apm-js-collab/code-transformer-bundler-plugins': 0.5.0
@@ -7486,7 +7510,7 @@ snapshots:
       '@sentry/core': 10.59.0
       magic-string: 0.30.21
     optionalDependencies:
-      vite: 7.3.5(@types/node@22.19.20)(jiti@2.7.0)(tsx@4.22.4)
+      vite: 7.3.5(@types/node@22.19.20)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0)
     transitivePeerDependencies:
       - supports-color
 
@@ -7768,7 +7792,7 @@ snapshots:
 
   '@vercel/oidc@3.2.0': {}
 
-  '@vitejs/plugin-react@5.2.0(vite@7.3.5(@types/node@22.19.20)(jiti@2.7.0)(tsx@4.22.4))':
+  '@vitejs/plugin-react@5.2.0(vite@7.3.5(@types/node@22.19.20)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0))':
     dependencies:
       '@babel/core': 7.29.7
       '@babel/plugin-transform-react-jsx-self': 7.29.7(@babel/core@7.29.7)
@@ -7776,7 +7800,7 @@ snapshots:
       '@rolldown/pluginutils': 1.0.0-rc.3
       '@types/babel__core': 7.20.5
       react-refresh: 0.18.0
-      vite: 7.3.5(@types/node@22.19.20)(jiti@2.7.0)(tsx@4.22.4)
+      vite: 7.3.5(@types/node@22.19.20)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0)
     transitivePeerDependencies:
       - supports-color
 
@@ -8072,6 +8096,12 @@ snapshots:
       base64-js: 1.5.1
       ieee754: 1.2.1
 
+  buffer@6.0.3:
+    dependencies:
+      base64-js: 1.5.1
+      ieee754: 1.2.1
+    optional: true
+
   builder-util-runtime@9.7.0:
     dependencies:
       debug: 4.4.3
@@ -8286,7 +8316,9 @@ snapshots:
       object-assign: 4.1.1
       vary: 1.1.2
 
-  crc@4.3.2: {}
+  crc@4.3.2(buffer@6.0.3):
+    optionalDependencies:
+      buffer: 6.0.3
 
   cross-dirname@0.1.0:
     optional: true
@@ -8462,7 +8494,20 @@ snapshots:
 
   electron-to-chromium@1.5.368: {}
 
-  electron-vite@5.0.0(vite@7.3.5(@types/node@22.19.20)(jiti@2.7.0)(tsx@4.22.4)):
+  electron-updater@6.8.9:
+    dependencies:
+      builder-util-runtime: 9.7.0
+      fs-extra: 10.1.0
+      js-yaml: 4.2.0
+      lazy-val: 1.0.5
+      lodash.escaperegexp: 4.1.2
+      lodash.isequal: 4.5.0
+      semver: 7.7.4
+      tiny-typed-emitter: 2.1.0
+    transitivePeerDependencies:
+      - supports-color
+
+  electron-vite@5.0.0(vite@7.3.5(@types/node@22.19.20)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0)):
     dependencies:
       '@babel/core': 7.29.7
       '@babel/plugin-transform-arrow-functions': 7.29.7(@babel/core@7.29.7)
@@ -8470,7 +8515,7 @@ snapshots:
       esbuild: 0.25.12
       magic-string: 0.30.21
       picocolors: 1.1.1
-      vite: 7.3.5(@types/node@22.19.20)(jiti@2.7.0)(tsx@4.22.4)
+      vite: 7.3.5(@types/node@22.19.20)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0)
     transitivePeerDependencies:
       - supports-color
 
@@ -9601,6 +9646,10 @@ snapshots:
   locate-path@6.0.0:
     dependencies:
       p-locate: 5.0.0
+
+  lodash.escaperegexp@4.1.2: {}
+
+  lodash.isequal@4.5.0: {}
 
   lodash.merge@4.6.2: {}
 
@@ -11072,6 +11121,8 @@ snapshots:
 
   tiny-case@1.0.3: {}
 
+  tiny-typed-emitter@2.1.0: {}
+
   tinyglobby@0.2.17:
     dependencies:
       fdir: 6.5.0(picomatch@4.0.4)
@@ -11292,7 +11343,7 @@ snapshots:
       '@types/unist': 3.0.3
       vfile-message: 4.0.3
 
-  vite@7.3.5(@types/node@22.19.20)(jiti@2.7.0)(tsx@4.22.4):
+  vite@7.3.5(@types/node@22.19.20)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0):
     dependencies:
       esbuild: 0.27.7
       fdir: 6.5.0(picomatch@4.0.4)
@@ -11305,6 +11356,7 @@ snapshots:
       fsevents: 2.3.3
       jiti: 2.7.0
       tsx: 4.22.4
+      yaml: 2.9.0
 
   wcwidth@1.0.1:
     dependencies:
@@ -11406,6 +11458,9 @@ snapshots:
   yallist@4.0.0: {}
 
   yallist@5.0.0: {}
+
+  yaml@2.9.0:
+    optional: true
 
   yargs-parser@18.1.3:
     dependencies:

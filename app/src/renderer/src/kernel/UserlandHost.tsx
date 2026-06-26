@@ -188,6 +188,7 @@ function applyStorageMutation(message: StorageMutationMessage): void {
   } else {
     storage.clear()
   }
+  window.dispatchEvent(new CustomEvent('y:kernel-storage-changed', { detail: { area: message.area } }))
 }
 
 function UserlandLoadingMark(): React.JSX.Element {

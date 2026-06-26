@@ -1,6 +1,6 @@
 {
   "name": "y",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "y — a self-modifying coding-agent desktop app",
   "main": "./out/main/index.js",
   "author": "",
@@ -19,9 +19,11 @@
     "build:unpack": "npm run build && electron-builder --dir",
     "build:win": "npm run build && electron-builder --win",
     "build:mac": "electron-vite build && electron-builder --mac",
-    "release:mac": "electron-vite build && electron-builder --mac --publish never && node scripts/notarize-dmg.mjs && node scripts/verify-mac-release.mjs",
+    "release:mac": "electron-vite build && electron-builder --mac --publish never && node scripts/notarize-dmg.mjs && node scripts/finalize-mac-release.mjs && node scripts/verify-mac-release.mjs",
     "build:linux": "electron-vite build && electron-builder --linux",
     "test:ui": "playwright test",
+    "test:desktop": "npm run build:unpack && playwright test -c playwright.desktop.config.ts",
+    "test:desktop:current": "playwright test -c playwright.desktop.config.ts",
     "test:ui:report": "playwright show-report"
   },
   "dependencies": {
@@ -31,6 +33,7 @@
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "better-sqlite3": "^12.11.1",
+    "electron-updater": "^6.8.9",
     "esbuild": "^0.28.0",
     "highlight.js": "^11.11.1",
     "node-pty": "^1.1.0",

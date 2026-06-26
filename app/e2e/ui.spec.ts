@@ -82,6 +82,25 @@ test.describe('y chat UI', () => {
     await expect(page.getByTestId('composer-terminal')).toContainText('preview terminal')
   })
 
+  test('kernel update notice renders available, installing, and error states', async ({ page }) => {
+    await page.goto('/preview.html?mode=shell&update=available&updateVersion=0.0.2')
+    await expect(page.locator('.kernel-update-notice')).toBeVisible()
+    await expect(page.locator('.kernel-update-badge')).toHaveText('Update available')
+    await expect(page.locator('.kernel-update-copy')).toHaveText('y 0.0.2 is ready.')
+    await expect(page.getByRole('button', { name: 'Update now' })).toHaveCSS('cursor', 'pointer')
+    await expect(page.getByRole('button', { name: 'Later' })).toHaveCSS('cursor', 'pointer')
+
+    await page.getByRole('button', { name: 'Update now' }).click()
+    await expect(page.locator('.kernel-update-copy')).toHaveText('Restarting y to install 0.0.2...')
+    await expect(page.getByRole('button', { name: 'Updating...' })).toBeDisabled()
+
+    await page.goto('/preview.html?mode=shell&update=available&updateVersion=0.0.3&updateError=Signature%20validation%20failed.')
+    await page.getByRole('button', { name: 'Update now' }).click()
+    await expect(page.locator('.kernel-update-copy')).toContainText('Could not install y 0.0.3.')
+    await expect(page.locator('.kernel-update-error')).toContainText('macOS rejected the downloaded update signature.')
+    await expect(page.getByRole('button', { name: 'Try again' })).toHaveCSS('cursor', 'pointer')
+  })
+
   test('right header actions remain clickable while the file rail is open', async ({ page }) => {
     await page.goto('/preview.html')
     await page.getByTestId('file-rail-button').click()
@@ -502,6 +521,65 @@ test.describe('y chat UI', () => {
     await expect(page.locator('.modify-assistant-message').last()).not.toHaveClass(/is-streaming/)
   })
 
+  test('modify updates existing tool cards when narration arrives between tool events', async ({ page }) => {
+    await page.goto('/preview.html?mode=modify')
+    await page.locator('[data-testid="modify-composer"] textarea').fill('Inspect and edit the panel')
+    await page.getByRole('button', { name: 'Send' }).click()
+
+    await page.evaluate(() => {
+      const emit = (window as typeof window & { __emitEngineEvent?: (event: AgentEvent) => void }).__emitEngineEvent
+      emit?.({
+        kind: 'tool',
+        name: 'Read',
+        phase: 'start',
+        id: 'modify-read-dedupe',
+        verb: 'Read',
+        target: 'app/userland-seed/panel.tsx'
+      })
+      emit?.({ kind: 'text', text: 'I am checking the panel before editing.' })
+      emit?.({ kind: 'thinking', text: 'Need the current JSX first.' })
+      emit?.({
+        kind: 'tool',
+        name: 'Read',
+        phase: 'end',
+        id: 'modify-read-dedupe',
+        verb: 'Read',
+        target: 'app/userland-seed/panel.tsx',
+        body: 'export default function Panel() {\n  return <div>panel</div>\n}'
+      })
+      emit?.({ kind: 'result', ok: true })
+    })
+
+    await expect(page.locator('.tool-activity').filter({ hasText: 'Read' })).toHaveCount(1)
+    await expect(page.locator('.tool-activity').filter({ hasText: 'panel.tsx' })).toHaveCount(1)
+  })
+
+  test('new Modify chat starts with a blank transcript', async ({ page }) => {
+    await page.goto('/preview.html?mode=modify')
+    await page.locator('[data-testid="modify-composer"] textarea').fill('Read the panel')
+    await page.getByRole('button', { name: 'Send' }).click()
+    await page.evaluate(() => {
+      const emit = (window as typeof window & { __emitEngineEvent?: (event: AgentEvent) => void }).__emitEngineEvent
+      emit?.({
+        kind: 'tool',
+        name: 'Read',
+        phase: 'end',
+        id: 'modify-old-read',
+        verb: 'Read',
+        target: 'app/userland-seed/panel.tsx',
+        body: 'export default function Panel() {}'
+      })
+      emit?.({ kind: 'text', text: 'Read complete.' })
+      emit?.({ kind: 'result', ok: true })
+    })
+    await expect(page.locator('.tool-activity').filter({ hasText: 'Read' })).toBeVisible()
+
+    await page.getByRole('button', { name: 'New Modify chat' }).click()
+    await expect(page.locator('.tool-activity')).toHaveCount(0)
+    await expect(page.locator('.modify-assistant-message')).toHaveCount(0)
+    await expect(page.locator('.modify-empty')).toBeVisible()
+  })
+
   test('busy chat supports queued follow-ups, boundary steering, and provider-independent editing', async ({ page }) => {
     await page.goto('/preview.html')
     await page.evaluate(() => {
@@ -721,7 +799,7 @@ test.describe('y chat UI', () => {
 
   test('codex file change updates replace the same visible tool row', async ({ page }) => {
     await page.goto('/preview.html')
-    await expect(page.getByTestId('composer-input')).toHaveAttribute('placeholder', /Ask for follow-up changes/)
+    await expect(page.getByTestId('composer-input')).toHaveAttribute('placeholder', /Make something you want/)
     await page.evaluate(() => {
       const emit = (window as typeof window & { __emitEngineEvent?: (event: AgentEvent) => void }).__emitEngineEvent
       emit?.({ kind: 'tool', name: 'Edit', phase: 'start', id: 'file-1', verb: 'edit', target: 'panel.tsx' })

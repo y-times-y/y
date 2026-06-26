@@ -11,7 +11,7 @@ import {
   type MenuItemConstructorOptions,
   type MessageBoxOptions
 } from 'electron'
-import { join } from 'path'
+import { isAbsolute, join, resolve } from 'path'
 import { pathToFileURL } from 'url'
 import { copyFile, mkdir, readFile, writeFile, stat, rm } from 'fs/promises'
 import { watch } from 'node:fs'
@@ -28,7 +28,7 @@ import { registerAnalyticsBricks } from './analytics'
 import { registerFeedbackBricks } from './feedback'
 import { registerOnboardingBricks } from './onboarding'
 import { registerAuthBricks } from './authStore'
-import { registerUpdateBricks } from './appUpdates'
+import { checkAppUpdates, registerUpdateBricks } from './appUpdates'
 import {
   ensureRepo,
   snapshot as ulSnapshot,
@@ -45,6 +45,15 @@ const RESET_LOCAL_DATA_ARG = '--reset-y-data'
 const USERLAND_SEED_METADATA_VERSION = 1
 const DEFAULT_HEXCLAVE_PROJECT_ID = 'eeb236a6-5299-4457-8819-d15a1728ca38'
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
+
+function configureUserDataDirOverride(): void {
+  const arg = process.argv.find((value) => value.startsWith('--y-user-data-dir='))
+  const rawPath = arg?.slice('--y-user-data-dir='.length).trim()
+  if (!rawPath) return
+  app.setPath('userData', isAbsolute(rawPath) ? rawPath : resolve(rawPath))
+}
+
+configureUserDataDirOverride()
 
 app.commandLine.appendSwitch('force-dark-mode')
 nativeTheme.themeSource = 'dark'
@@ -142,10 +151,74 @@ async function resetLocalDataAndRelaunch(): Promise<void> {
   }
 }
 
+async function restoreSavedCustomInterface(): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const backup = await readFile(userlandDefaultResetBackupFile(), 'utf-8')
+    const backupHash = sha256(backup)
+    await writeFile(userlandFile(), backup, 'utf-8')
+    await writeUserlandSeedMetadata({
+      seedHash: backupHash,
+      seedVersion: app.getVersion(),
+      customized: true
+    }).catch((err) => {
+      console.warn('[y] Userland seed metadata unavailable:', err)
+    })
+    await clearPendingUserlandSeed()
+    await ulSnapshot(userlandDir(), 'restore custom app').catch((err) => {
+      console.warn('[y] Userland restore snapshot unavailable:', err)
+    })
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) window.webContents.send('userland:changed')
+    }
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+async function restoreSavedCustomInterfaceFromMenu(focusedWindow?: BrowserWindow | null): Promise<void> {
+  const result = await restoreSavedCustomInterface()
+  const target = focusedWindow && !focusedWindow.isDestroyed() ? focusedWindow : BrowserWindow.getFocusedWindow()
+  if (result.ok) {
+    if (target && !target.isDestroyed()) target.focus()
+    return
+  }
+
+  const message = result.error?.includes('ENOENT') ? 'No saved custom interface' : 'Could not restore custom interface'
+  const detail =
+    result.error?.includes('ENOENT')
+      ? 'y saves your custom interface when you switch to the default y interface. There is no saved custom interface to restore yet.'
+      : result.error || 'The saved custom interface could not be restored.'
+  if (target && !target.isDestroyed()) {
+    await dialog.showMessageBox(target, { type: 'warning', message, detail })
+  } else {
+    await dialog.showMessageBox({ type: 'warning', message, detail })
+  }
+}
+
 function installAppMenu(): void {
   const resetLocalDataItem: MenuItemConstructorOptions = {
     label: 'Reset Local Data...',
     click: () => void resetLocalDataAndRelaunch()
+  }
+  const restoreCustomInterfaceItem: MenuItemConstructorOptions = {
+    label: 'Restore Custom Interface...',
+    click: (_item, focusedWindow) =>
+      void restoreSavedCustomInterfaceFromMenu(focusedWindow instanceof BrowserWindow ? focusedWindow : null)
+  }
+  const checkForUpdatesItem: MenuItemConstructorOptions = {
+    label: 'Check for Updates...',
+    click: async (_item, focusedWindow) => {
+      const result = await checkAppUpdates()
+      if (result.available) return
+      const message = result.error ? 'Could not check for updates' : 'y is up to date'
+      const detail = result.error || `You are running y ${result.currentVersion}.`
+      if (focusedWindow && !focusedWindow.isDestroyed()) {
+        await dialog.showMessageBox(focusedWindow, { type: result.error ? 'warning' : 'info', message, detail })
+      } else {
+        await dialog.showMessageBox({ type: result.error ? 'warning' : 'info', message, detail })
+      }
+    }
   }
 
   const template: MenuItemConstructorOptions[] =
@@ -155,6 +228,9 @@ function installAppMenu(): void {
             label: app.name,
             submenu: [
               { role: 'about' },
+              checkForUpdatesItem,
+              { type: 'separator' },
+              restoreCustomInterfaceItem,
               { type: 'separator' },
               resetLocalDataItem,
               { type: 'separator' },
@@ -175,7 +251,7 @@ function installAppMenu(): void {
       : [
           {
             label: 'File',
-            submenu: [resetLocalDataItem, { type: 'separator' }, { role: 'quit' }]
+            submenu: [restoreCustomInterfaceItem, { type: 'separator' }, resetLocalDataItem, { type: 'separator' }, { role: 'quit' }]
           },
           { role: 'editMenu' },
           { role: 'viewMenu' },
@@ -185,7 +261,8 @@ function installAppMenu(): void {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
-const gotSingleInstanceLock = app.requestSingleInstanceLock()
+const isE2E = process.env.Y_E2E === '1'
+const gotSingleInstanceLock = isE2E || app.requestSingleInstanceLock()
 if (!gotSingleInstanceLock) {
   app.quit()
 } else {
@@ -256,6 +333,14 @@ function userlandFile(): string {
   return join(userlandDir(), 'panel.tsx')
 }
 
+function userlandPendingSeedFile(): string {
+  return join(userlandDir(), '.y', 'pending-panel.tsx')
+}
+
+function userlandDefaultResetBackupFile(): string {
+  return join(userlandDir(), '.y', 'before-default-panel.tsx')
+}
+
 type UserlandSeedMetadata = {
   version: number
   seedHash: string
@@ -266,12 +351,98 @@ type UserlandSeedMetadata = {
   pendingSeedVersion?: string
 }
 
+type UserlandUpdateManifestItem = {
+  id: string
+  title: string
+  description: string
+  required: boolean
+}
+
+type UserlandUpdateManifest = {
+  version: string
+  items: UserlandUpdateManifestItem[]
+}
+
 function userlandSeedMetadataFile(): string {
   return join(app.getPath('userData'), 'userland-seed.json')
 }
 
 function sha256(source: string): string {
   return createHash('sha256').update(source).digest('hex')
+}
+
+function userlandUpdateManifestFile(): string {
+  return app.isPackaged
+    ? join(process.resourcesPath, 'userland-update-manifest.json')
+    : join(app.getAppPath(), 'userland-update-manifest.json')
+}
+
+async function readUserlandUpdateManifest(): Promise<UserlandUpdateManifest | undefined> {
+  try {
+    const parsed = JSON.parse(await readFile(userlandUpdateManifestFile(), 'utf-8')) as Partial<UserlandUpdateManifest>
+    if (typeof parsed.version !== 'string' || !Array.isArray(parsed.items)) return undefined
+    const items = parsed.items
+      .map((item) => ({
+        id: typeof item?.id === 'string' ? item.id : '',
+        title: typeof item?.title === 'string' ? item.title : '',
+        description: typeof item?.description === 'string' ? item.description : '',
+        required: Boolean(item?.required)
+      }))
+      .filter((item) => item.id && item.title && item.description)
+    if (!items.length) return undefined
+    return { version: parsed.version, items }
+  } catch {
+    return undefined
+  }
+}
+
+function userlandSeedArchiveDir(): string {
+  return join(app.getPath('userData'), 'userland-seeds')
+}
+
+function archivedUserlandSeedFile(hash: string): string {
+  if (!/^[0-9a-f]{64}$/iu.test(hash)) throw new Error('Invalid Userland seed hash.')
+  return join(userlandSeedArchiveDir(), `${hash}.tsx`)
+}
+
+async function archiveUserlandSeed(hash: string, source: string): Promise<void> {
+  await mkdir(userlandSeedArchiveDir(), { recursive: true })
+  await writeFile(archivedUserlandSeedFile(hash), source, 'utf-8')
+}
+
+async function stagePendingUserlandSeed(source: string): Promise<void> {
+  await mkdir(join(userlandDir(), '.y'), { recursive: true })
+  await writeFile(userlandPendingSeedFile(), source, 'utf-8')
+}
+
+async function clearPendingUserlandSeed(): Promise<void> {
+  await rm(userlandPendingSeedFile(), { force: true }).catch(() => {})
+}
+
+async function stageUserlandUpdateForReview(
+  seed: string,
+  seedHash: string,
+  seedVersion: string,
+  metadata: UserlandSeedMetadata | null,
+  liveHash: string
+): Promise<void> {
+  await stagePendingUserlandSeed(seed).catch((err) => {
+    console.warn('[y] Userland pending seed unavailable:', err)
+  })
+  await writeUserlandSeedMetadata({
+    seedHash: metadata?.seedHash || liveHash,
+    seedVersion: metadata?.seedVersion || seedVersion,
+    customized: true,
+    pendingSeedHash: seedHash,
+    pendingSeedVersion: seedVersion
+  }).catch((err) => {
+    console.warn('[y] Userland seed metadata unavailable:', err)
+  })
+}
+
+async function saveDefaultResetBackup(source: string): Promise<void> {
+  await mkdir(join(userlandDir(), '.y'), { recursive: true })
+  await writeFile(userlandDefaultResetBackupFile(), source, 'utf-8')
 }
 
 async function readUserlandSeedMetadata(): Promise<UserlandSeedMetadata | null> {
@@ -309,6 +480,69 @@ async function writeUserlandSeedMetadata(metadata: Omit<UserlandSeedMetadata, 'v
   )
 }
 
+async function userlandSeedStatus(): Promise<{
+  ok: boolean
+  customized: boolean
+  seedVersion: string
+  pending: boolean
+  pendingSeedHash?: string
+  pendingSeedVersion?: string
+  updateManifest?: UserlandUpdateManifest
+  restoreDefaultAvailable: boolean
+  error?: string
+}> {
+  try {
+    const metadata = await readUserlandSeedMetadata()
+    const updateManifest = await readUserlandUpdateManifest()
+    const live = await readFile(userlandFile(), 'utf-8')
+    const liveHash = sha256(live)
+    let restoreDefaultAvailable = false
+    try {
+      const backup = await readFile(userlandDefaultResetBackupFile(), 'utf-8')
+      restoreDefaultAvailable = sha256(backup) !== liveHash
+    } catch {
+      restoreDefaultAvailable = false
+    }
+    if (metadata?.pendingSeedHash) {
+      if (liveHash === metadata.pendingSeedHash) {
+        await writeUserlandSeedMetadata({
+          seedHash: metadata.pendingSeedHash,
+          seedVersion: metadata.pendingSeedVersion || app.getVersion(),
+          customized: false
+        })
+        await clearPendingUserlandSeed()
+        return {
+          ok: true,
+          customized: false,
+          seedVersion: metadata.pendingSeedVersion || app.getVersion(),
+          pending: false,
+          updateManifest,
+          restoreDefaultAvailable
+        }
+      }
+    }
+    return {
+      ok: true,
+      customized: Boolean(metadata?.customized),
+      seedVersion: metadata?.seedVersion || app.getVersion(),
+      pending: Boolean(metadata?.pendingSeedHash),
+      pendingSeedHash: metadata?.pendingSeedHash,
+      pendingSeedVersion: metadata?.pendingSeedVersion,
+      updateManifest,
+      restoreDefaultAvailable
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      customized: false,
+      seedVersion: app.getVersion(),
+      pending: false,
+      restoreDefaultAvailable: false,
+      error: err instanceof Error ? err.message : String(err)
+    }
+  }
+}
+
 function isKnownLightUserlandDefault(source: string): boolean {
   return (
     source.includes('data-testid="y-app"') &&
@@ -330,8 +564,13 @@ async function ensureUserland(): Promise<void> {
   const seed = await readUserlandSeed()
   const seedHash = sha256(seed)
   const seedVersion = app.getVersion()
+  const updateManifest = await readUserlandUpdateManifest()
+  const shouldReviewBundledUserlandUpdate = Boolean(updateManifest?.items.length)
   let needsWrite = false
   let metadata: UserlandSeedMetadata | null = null
+  await archiveUserlandSeed(seedHash, seed).catch((err) => {
+    console.warn('[y] Userland seed archive unavailable:', err)
+  })
   try {
     const live = await readFile(userlandFile(), 'utf-8')
     const liveHash = sha256(live)
@@ -341,10 +580,16 @@ async function ensureUserland(): Promise<void> {
         console.warn('[y] Userland dark repair backup unavailable:', err)
       })
       needsWrite = true
-    } else if (metadata && metadata.seedHash !== seedHash && liveHash === metadata.seedHash) {
+    } else if (metadata && !metadata.pendingSeedHash && metadata.seedHash !== seedHash && liveHash === metadata.seedHash) {
       // The user never changed the previous bundled Userland. Move them to the
-      // new bundled seed automatically.
-      needsWrite = true
+      // new bundled seed automatically unless this release describes Userland
+      // changes. In that case, show the same checklist to everyone so users can
+      // understand what changed before accepting it.
+      if (shouldReviewBundledUserlandUpdate) {
+        await stageUserlandUpdateForReview(seed, seedHash, seedVersion, metadata, liveHash)
+      } else {
+        needsWrite = true
+      }
     } else if (liveHash === seedHash && (!metadata || metadata.seedHash !== seedHash || metadata.customized)) {
       await writeUserlandSeedMetadata({
         seedHash,
@@ -353,21 +598,43 @@ async function ensureUserland(): Promise<void> {
       }).catch((err) => {
         console.warn('[y] Userland seed metadata unavailable:', err)
       })
+      await clearPendingUserlandSeed()
+    } else if (metadata?.pendingSeedHash && liveHash === metadata.seedHash && metadata.seedHash !== seedHash) {
+      // The user kept their accepted/customized Userland while a bundled seed is
+      // waiting for explicit action. Keep the pending update visible across
+      // restarts; do not treat the accepted customized file as fully up to date.
+      await writeUserlandSeedMetadata({
+        seedHash: metadata.seedHash,
+        seedVersion: metadata.seedVersion,
+        customized: true,
+        pendingSeedHash: metadata.pendingSeedHash,
+        pendingSeedVersion: metadata.pendingSeedVersion || seedVersion
+      }).catch((err) => {
+        console.warn('[y] Userland seed metadata unavailable:', err)
+      })
+    } else if (metadata && metadata.seedHash !== seedHash && liveHash !== metadata.seedHash) {
+      // Userland is user-owned once it diverges from the last accepted seed.
+      // Stage the new bundled seed for an explicit Modify-assisted update flow
+      // instead of silently merging optional UI changes during app startup.
+      await stageUserlandUpdateForReview(seed, seedHash, seedVersion, metadata, liveHash)
     } else if (!metadata || metadata.seedHash !== seedHash || metadata.customized !== (liveHash !== seedHash)) {
       // Existing 0.0.1 installs have no metadata. Mark customized Userland as
       // user-owned and record newer bundled seeds as pending instead of
       // overwriting local UI changes.
-      await writeUserlandSeedMetadata({
-        seedHash: metadata?.seedHash || seedHash,
-        seedVersion: metadata?.seedVersion || seedVersion,
-        customized: liveHash !== (metadata?.seedHash || seedHash),
-        pendingSeedHash:
-          metadata && liveHash !== metadata.seedHash && metadata.seedHash !== seedHash ? seedHash : undefined,
-        pendingSeedVersion:
-          metadata && liveHash !== metadata.seedHash && metadata.seedHash !== seedHash ? seedVersion : undefined
-      }).catch((err) => {
-        console.warn('[y] Userland seed metadata unavailable:', err)
-      })
+      const shouldStagePendingSeed =
+        liveHash !== seedHash && (!metadata || (liveHash !== metadata.seedHash && metadata.seedHash !== seedHash))
+      if (shouldStagePendingSeed) {
+        await stageUserlandUpdateForReview(seed, seedHash, seedVersion, metadata, liveHash)
+      } else {
+        await writeUserlandSeedMetadata({
+          seedHash: metadata?.seedHash || liveHash,
+          seedVersion: metadata?.seedVersion || seedVersion,
+          customized: liveHash !== seedHash
+        }).catch((err) => {
+          console.warn('[y] Userland seed metadata unavailable:', err)
+        })
+        await clearPendingUserlandSeed()
+      }
     }
     // Dev: pull kernel seed updates into the live Userland file when seed is newer.
     if (!needsWrite && is.dev) {
@@ -386,6 +653,7 @@ async function ensureUserland(): Promise<void> {
     }).catch((err) => {
       console.warn('[y] Userland seed metadata unavailable:', err)
     })
+    await clearPendingUserlandSeed()
   }
   // Native Git is required for checkpoints and rollback. Keep boot resilient so
   // the UI can explain a missing installation instead of crashing at startup.
@@ -486,6 +754,7 @@ app.whenReady().then(async () => {
   // which is fire-and-forget). The renderer calls these via ipcRenderer.invoke.
   ipcMain.handle('userland:read', () => readFile(userlandFile(), 'utf-8'))
   ipcMain.handle('userland:path', () => userlandFile())
+  ipcMain.handle('userland:seedStatus', () => userlandSeedStatus())
 
   // Compile the Userland .tsx into runnable JS (CommonJS) with esbuild.
   // We externalize react/jsx-runtime via the output's require() calls — the
@@ -532,6 +801,15 @@ app.whenReady().then(async () => {
     try {
       const seed = await readUserlandSeed()
       const seedHash = sha256(seed)
+      const current = await readFile(userlandFile(), 'utf-8').catch(() => '')
+      if (current && sha256(current) !== seedHash) {
+        await saveDefaultResetBackup(current).catch((err) => {
+          console.warn('[y] Userland default reset backup unavailable:', err)
+        })
+        await ulSnapshot(userlandDir(), 'before default app').catch((err) => {
+          console.warn('[y] Userland pre-reset snapshot unavailable:', err)
+        })
+      }
       await writeFile(userlandFile(), seed, 'utf-8')
       await writeUserlandSeedMetadata({
         seedHash,
@@ -540,6 +818,7 @@ app.whenReady().then(async () => {
       }).catch((err) => {
         console.warn('[y] Userland seed metadata unavailable:', err)
       })
+      await clearPendingUserlandSeed()
       await ulSnapshot(userlandDir(), 'original app').catch((err) => {
         console.warn('[y] Userland reset snapshot unavailable:', err)
       })
@@ -550,6 +829,10 @@ app.whenReady().then(async () => {
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
     }
+  })
+
+  ipcMain.handle('userland:restoreDefaultResetBackup', async () => {
+    return restoreSavedCustomInterface()
   })
 
   // ---- Engine bricks (Phase 4): drive a coding-agent CLI from the renderer ----
@@ -672,6 +955,10 @@ app.whenReady().then(async () => {
     // dock icon is clicked and there are no other windows open.
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+}).catch((err: unknown) => {
+  const error = err instanceof Error ? err.stack || err.message : String(err)
+  console.error('[y] Fatal startup error:', error)
+  app.quit()
 })
 
 // Quit when all windows are closed, except on macOS. There, it's common

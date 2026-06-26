@@ -68,7 +68,8 @@ function BootLoadingMark(): React.JSX.Element {
 }
 
 function AuthGate({ children }: { children: React.ReactNode }): React.JSX.Element {
-  const [status, setStatus] = React.useState<AuthStatus>('checking')
+  const bypassAuth = Boolean(window.yTest?.bypassAuth)
+  const [status, setStatus] = React.useState<AuthStatus>(bypassAuth ? 'signed-in' : 'checking')
   const [error, setError] = React.useState<string>('')
   const [busy, setBusy] = React.useState(false)
   const [browserOpened, setBrowserOpened] = React.useState(false)
@@ -76,10 +77,12 @@ function AuthGate({ children }: { children: React.ReactNode }): React.JSX.Elemen
   const activeSignInRef = React.useRef(false)
 
   React.useEffect(() => {
+    if (bypassAuth) return
     void window.y.analytics.track('auth_gate_viewed')
-  }, [])
+  }, [bypassAuth])
 
   React.useEffect(() => {
+    if (bypassAuth) return
     let cancelled = false
     const off = window.yKernelAuth.onChanged((session) => {
       setStatus(session ? 'signed-in' : 'signed-out')
@@ -112,7 +115,7 @@ function AuthGate({ children }: { children: React.ReactNode }): React.JSX.Elemen
       off()
       offCallback()
     }
-  }, [])
+  }, [bypassAuth])
 
   async function signIn(): Promise<void> {
     const attempt = signInAttemptRef.current + 1

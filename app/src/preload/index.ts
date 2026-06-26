@@ -26,6 +26,7 @@ type OnboardingCliCheckResult = {
 }
 
 type AppUpdateState = {
+  phase?: 'idle' | 'checking' | 'not-available' | 'available' | 'downloading' | 'downloaded' | 'installing' | 'error'
   checking: boolean
   currentVersion: string
   latestVersion?: string
@@ -33,6 +34,22 @@ type AppUpdateState = {
   releaseUrl?: string
   downloadUrl?: string
   checkedAt?: string
+  error?: string
+  progress?: number
+}
+
+type UserlandSeedStatus = {
+  ok: boolean
+  customized: boolean
+  seedVersion: string
+  pending: boolean
+  pendingSeedHash?: string
+  pendingSeedVersion?: string
+  updateManifest?: {
+    version: string
+    items: { id: string; title: string; description: string; required: boolean }[]
+  }
+  restoreDefaultAvailable: boolean
   error?: string
 }
 
@@ -375,6 +392,9 @@ const y = {
       ipcRenderer.invoke('userland:restoreCheckpoint', checkpointId),
     resetToSeed: (): Promise<{ ok: boolean; error?: string }> =>
       ipcRenderer.invoke('userland:resetToSeed'),
+    restoreDefaultResetBackup: (): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke('userland:restoreDefaultResetBackup'),
+    seedStatus: (): Promise<UserlandSeedStatus> => ipcRenderer.invoke('userland:seedStatus'),
     // Subscribe to live disk changes; returns an unsubscribe function.
     onChanged: (cb: () => void): (() => void) => {
       const listener = (): void => cb()
@@ -616,6 +636,10 @@ const yKernelAuth = {
   }
 }
 
+const yTest = {
+  bypassAuth: process.env.Y_E2E_BYPASS_AUTH === '1'
+}
+
 // Use `contextBridge` APIs to expose Electron APIs to
 // renderer only if context isolation is enabled, otherwise
 // just add to the DOM global.
@@ -625,6 +649,7 @@ if (process.contextIsolated) {
     contextBridge.exposeInMainWorld('api', api)
     contextBridge.exposeInMainWorld('y', y)
     contextBridge.exposeInMainWorld('yKernelAuth', yKernelAuth)
+    contextBridge.exposeInMainWorld('yTest', yTest)
   } catch (error) {
     console.error(error)
   }
@@ -637,4 +662,6 @@ if (process.contextIsolated) {
   window.y = y
   // @ts-ignore (define in dts)
   window.yKernelAuth = yKernelAuth
+  // @ts-ignore (define in dts)
+  window.yTest = yTest
 }

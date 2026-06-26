@@ -300,13 +300,17 @@ function upsertTool(list: Msg[], e: Extract<AgentEvent, { kind: 'tool' }>): Msg[
   const verb = e.verb || toolVerbFromName(e.name)
   if (e.name === 'hook' || verb.toLowerCase().includes('hook')) return settleTools(sealed)
   const isLive = e.phase !== 'end'
-  const last = sealed[sealed.length - 1]
-  const sameTool =
-    last?.role === 'tool' &&
-    !last.system &&
-    Boolean(e.id && last.id === e.id)
-
-  const base = sameTool ? sealed : settleTools(sealed)
+  const lastUserIndex = sealed.findLastIndex((message) => message.role === 'user')
+  const existingIndex = e.id
+    ? sealed.findIndex(
+        (message, index) =>
+          index > lastUserIndex &&
+          message.role === 'tool' &&
+          !message.system &&
+          message.id === e.id
+      )
+    : -1
+  const base = existingIndex === -1 ? settleTools(sealed) : sealed
   const prev = base[base.length - 1]
   const next = {
     role: 'tool' as const,
@@ -316,6 +320,18 @@ function upsertTool(list: Msg[], e: Extract<AgentEvent, { kind: 'tool' }>): Msg[
     target: e.target,
     body: e.body,
     streaming: isLive
+  }
+  if (existingIndex !== -1) {
+    const existing = base[existingIndex]
+    if (existing.role !== 'tool') return base
+    const updated = base.slice()
+    updated[existingIndex] = {
+      ...existing,
+      ...next,
+      target: e.target ?? existing.target,
+      body: e.body ?? existing.body
+    }
+    return isLive ? updated : mergeAdjacentSameFileEdit(settleTools(updated))
   }
   const merge =
     prev?.role === 'tool' &&
@@ -417,7 +433,13 @@ function isNoisyModifyStatus(value: string): boolean {
   )
 }
 
-function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
+function ModifyChat({
+  onClose,
+  promptRequest
+}: {
+  onClose: () => void
+  promptRequest?: { id: string; text: string; autoSubmit?: boolean }
+}): React.JSX.Element {
   const [catalog, setCatalog] = React.useState<EngineModelCatalog[]>([])
   const [engineId, setEngineId] = React.useState('claude-code')
   const [modelId, setModelId] = React.useState('claude-sonnet-4-6#effort=medium')
@@ -459,6 +481,7 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
   const firstTurnRef = React.useRef(true)
   const turnStartAtRef = React.useRef(0)
   const activeRequestRef = React.useRef('')
+  const handledPromptRequestIdRef = React.useRef('')
   const lastTurnDurationRef = React.useRef<number | undefined>(undefined)
   const retriesRef = React.useRef(0)
   const verifyTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -510,6 +533,13 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
     },
     [resizeComposer]
   )
+
+  React.useEffect(() => {
+    if (!promptRequest?.text || promptRequest.autoSubmit) return
+    if (busyRef.current) return
+    if (composerValue().trim()) return
+    setComposerValue(promptRequest.text)
+  }, [promptRequest?.autoSubmit, promptRequest?.id, promptRequest?.text, setComposerValue])
 
   const handleComposerInput = React.useCallback(
     (value: string): void => {
@@ -643,6 +673,39 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
     void sendText(item.text, sid, messagesRef.current)
   }
 
+  function resetTransientTurnState(nextMessages?: Msg[], clearQueued = true): void {
+    if (verifyTimerRef.current) {
+      clearTimeout(verifyTimerRef.current)
+      verifyTimerRef.current = null
+    }
+    if (streamRafRef.current != null) {
+      cancelAnimationFrame(streamRafRef.current)
+      streamRafRef.current = null
+    }
+    if (streamTimerRef.current != null) {
+      window.clearTimeout(streamTimerRef.current)
+      streamTimerRef.current = null
+    }
+    streamQueueRef.current = []
+    streamBufferRef.current = null
+    retriesRef.current = 0
+    turnStartAtRef.current = 0
+    activeRequestRef.current = ''
+    lastTurnDurationRef.current = undefined
+    setStatus('')
+    setError('')
+    setBusy(false)
+    setEditingMessage(null)
+    if (clearQueued) {
+      queuedFollowUpsRef.current = []
+      setQueuedFollowUps([])
+    }
+    if (nextMessages) {
+      messagesRef.current = nextMessages
+      setMessages(nextMessages)
+    }
+  }
+
   function buildSteeringText(text: string): string {
     return [
       'The user is steering the current Modify turn. Treat this as an immediate correction or extra instruction.',
@@ -688,13 +751,10 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
     setRunOptions(options)
     setSessionId(null)
     if (!keepMessages) {
-      setMessages([])
-      messagesRef.current = []
-      updateQueuedFollowUps(() => [])
+      resetTransientTurnState([])
+    } else {
+      resetTransientTurnState()
     }
-    setStatus('')
-    setError('')
-    setBusy(false)
     const res = await (window.y.engine as KernelEngineApi).startModify({ engine: id, model: resolved, options })
     if (!res.ok || !res.sessionId) {
       setError(res.error || 'Failed to start the Modify engine')
@@ -748,14 +808,11 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
   function applyModifyChat(chat: ModifyChatRecord, cat = catalogRef.current): void {
     const config = configForModifyChat(chat, cat)
     const nextGoal = appStateRef.current ? activeChatConfig(appStateRef.current, cat).goal : goal
+    const nextMessages = (chat.messages ?? []) as Msg[]
     setActiveModifyChatId(chat.id)
     activeModifyChatIdRef.current = chat.id
-    setMessages((chat.messages ?? []) as Msg[])
-    messagesRef.current = (chat.messages ?? []) as Msg[]
-    updateQueuedFollowUps(() => [])
-    setEditingMessage(null)
+    resetTransientTurnState(nextMessages)
     setHistoryOpen(false)
-    setError('')
     setGoal(nextGoal)
     activeConfigKeyRef.current = configKey({ ...config, goal: nextGoal })
     void start(config.engineId, config.modelId, config.runOptions, true)
@@ -1126,6 +1183,13 @@ function ModifyChat({ onClose }: { onClose: () => void }): React.JSX.Element {
     scrollLogToEnd()
     void window.y.engine.send(targetSession, toSend)
   }
+
+  React.useEffect(() => {
+    if (!promptRequest?.autoSubmit || !promptRequest.text || !sessionId || busy) return
+    if (handledPromptRequestIdRef.current === promptRequest.id) return
+    handledPromptRequestIdRef.current = promptRequest.id
+    void sendText(promptRequest.text)
+  }, [busy, promptRequest?.autoSubmit, promptRequest?.id, promptRequest?.text, sessionId])
 
   const send = (): void => {
     const text = composerValue().trim()

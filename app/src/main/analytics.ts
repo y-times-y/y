@@ -75,6 +75,8 @@ const SAFE_EVENTS = {
   modify_revert_graph_opened: {},
   modify_snapshot_restored: {},
   modify_reset_original: {},
+  app_update_opened: { latestVersion: 'string' },
+  app_update_dismissed: { latestVersion: 'string' },
   feedback_dialog_sent: { stored: 'stored' },
   feedback_submitted: { stored: 'stored', category: 'string', messageLength: 'number', remoteFailed: 'boolean' },
   missing_brick_detected: { brick: 'brick', reason: 'brickReason', surface: 'surface', confidence: 'confidence', engineId: 'engine' }
