@@ -7,7 +7,7 @@
 https://github.com/user-attachments/assets/24f10277-bb0e-4c3f-8a05-6833363d07a2
 
 <p align="center">
-  <a href="https://github.com/y-times-y/y/releases/latest/download/y-0.0.1.dmg">
+  <a href="https://github.com/y-times-y/y/releases/latest/download/y.dmg">
     <img alt="Download for macOS" src="https://img.shields.io/badge/Download%20for-macOS-000000?style=for-the-badge&logo=apple&logoColor=white" />
   </a>
 </p>
@@ -80,7 +80,7 @@ The user's local CLI auth remains the source of truth. y orchestrates the experi
 The latest macOS build is published on GitHub Releases:
 
 <p>
-  <a href="https://github.com/y-times-y/y/releases/latest/download/y-0.0.1.dmg">
+  <a href="https://github.com/y-times-y/y/releases/latest/download/y.dmg">
     <img alt="Download y for macOS" src="https://img.shields.io/badge/Download%20y%20for-macOS-000000?style=for-the-badge&logo=apple&logoColor=white" />
   </a>
 </p>
