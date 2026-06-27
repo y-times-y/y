@@ -110,10 +110,6 @@ pnpm build:mac
 
 The generated app artifacts are written to `app/dist/` and are intentionally not committed.
 
-## Privacy and analytics
-
-y keeps the coding workflow local. Missing-brick reports are structured and should describe the missing capability, not the user's private prompt or source code.
-
 ## Status
 
 y is under active development. The current focus is launch-readiness for macOS: packaging, auth, analytics, local app-state durability, and the self-modifying Modify workflow.
