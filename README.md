@@ -6,6 +6,16 @@
 
 https://github.com/user-attachments/assets/24f10277-bb0e-4c3f-8a05-6833363d07a2
 
+## Star History
+
+<a href="https://www.star-history.com/?repos=y-times-y%2Fy&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=y-times-y/y&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=y-times-y/y&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=y-times-y/y&type=date&legend=top-left" />
+ </picture>
+</a>
+
 <p align="center">
   <a href="https://github.com/y-times-y/y/releases/latest/download/y.dmg">
     <img alt="Download for macOS" src="https://img.shields.io/badge/Download%20for-macOS-000000?style=for-the-badge&logo=apple&logoColor=white" />
