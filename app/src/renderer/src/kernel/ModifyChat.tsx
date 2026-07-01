@@ -240,7 +240,7 @@ function activeChatConfig(state: AppState, catalog: EngineModelCatalog[]): {
   const modelId =
     chat?.modelId ||
     catalog.find((c) => c.engine === engineId)?.defaultModel ||
-    'claude-sonnet-4-6#effort=medium'
+    'claude-fable-5#effort=medium'
   return {
     engineId,
     modelId,
@@ -442,7 +442,7 @@ function ModifyChat({
 }): React.JSX.Element {
   const [catalog, setCatalog] = React.useState<EngineModelCatalog[]>([])
   const [engineId, setEngineId] = React.useState('claude-code')
-  const [modelId, setModelId] = React.useState('claude-sonnet-4-6#effort=medium')
+  const [modelId, setModelId] = React.useState('claude-fable-5#effort=medium')
   const [runOptions, setRunOptions] = React.useState<EngineRunOptions>(() => defaultRunOptions())
   const [goal, setGoal] = React.useState('')
   const [sessionId, setSessionId] = React.useState<string | null>(null)
@@ -739,7 +739,7 @@ function ModifyChat({
     const resolved =
       model ??
       catalogRef.current.find((c) => c.engine === id)?.defaultModel ??
-      'claude-sonnet-4-6#effort=medium'
+      'claude-fable-5#effort=medium'
     if (sidRef.current) window.y.engine.cancel(sidRef.current)
     if (verifyTimerRef.current) clearTimeout(verifyTimerRef.current)
     sidRef.current = null

@@ -33,8 +33,18 @@ const PREVIEW_CATALOG: EngineModelCatalog[] = [
   {
     engine: 'claude-code',
     label: 'Claude Code',
-    defaultModel: 'claude-sonnet-4-6#effort=medium',
+    defaultModel: 'claude-fable-5#effort=medium',
     models: [
+      { id: 'claude-fable-5#effort=low', label: 'Fable 5 · Low', contextWindow: 200_000 },
+      { id: 'claude-fable-5#effort=medium', label: 'Fable 5 · Medium', contextWindow: 200_000 },
+      { id: 'claude-fable-5#effort=high', label: 'Fable 5 · High', contextWindow: 200_000 },
+      { id: 'claude-fable-5#effort=xhigh', label: 'Fable 5 · XHigh', contextWindow: 200_000 },
+      { id: 'claude-fable-5#effort=max', label: 'Fable 5 · Max', contextWindow: 200_000 },
+      { id: 'claude-sonnet-5#effort=high', label: 'Sonnet 5 · High', contextWindow: 1_000_000 },
+      { id: 'claude-sonnet-5#effort=medium', label: 'Sonnet 5 · Medium', contextWindow: 1_000_000 },
+      { id: 'claude-sonnet-5#effort=xhigh', label: 'Sonnet 5 · XHigh', contextWindow: 1_000_000 },
+      { id: 'claude-sonnet-5#effort=max', label: 'Sonnet 5 · Max', contextWindow: 1_000_000 },
+      { id: 'claude-sonnet-5#effort=low', label: 'Sonnet 5 · Low', contextWindow: 1_000_000 },
       { id: 'claude-sonnet-4-6#effort=low', label: 'Sonnet 4.6 · Low', contextWindow: 200_000 },
       { id: 'claude-sonnet-4-6#effort=medium', label: 'Sonnet 4.6 · Medium', contextWindow: 200_000 },
       { id: 'claude-sonnet-4-6#effort=high', label: 'Sonnet 4.6 · High', contextWindow: 200_000 },
@@ -1686,7 +1696,7 @@ export default function Chat() {
   const [engines, setEngines] = useState<string[]>(PREVIEW ? ['claude-code', 'codex'] : [])
   const [catalog, setCatalog] = useState<EngineModelCatalog[]>(PREVIEW ? PREVIEW_CATALOG : [])
   const [engineId, setEngineId] = useState('claude-code')
-  const [modelId, setModelId] = useState('claude-sonnet-4-6#effort=medium')
+  const [modelId, setModelId] = useState('claude-fable-5#effort=medium')
   const [runOptions, setRunOptions] = useState<EngineRunOptions>(defaultRunOptions)
   const [sessionId, setSessionId] = useState<string | null>(PREVIEW ? 'preview' : null)
   const [title, setTitle] = useState('New chat')
@@ -1959,7 +1969,7 @@ export default function Chat() {
   }
 
   function chatModel(chat?: AppChat, engine = chatEngine(chat)): string {
-    return chat?.modelId || catalog.find(function (c) { return c.engine === engine })?.defaultModel || 'claude-sonnet-4-6#effort=medium'
+    return chat?.modelId || catalog.find(function (c) { return c.engine === engine })?.defaultModel || 'claude-fable-5#effort=medium'
   }
 
   function chatOptions(chat?: AppChat): EngineRunOptions {

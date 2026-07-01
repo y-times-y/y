@@ -188,8 +188,8 @@ window.y = {
       {
         engine: 'claude-code',
         label: 'Claude Code',
-        defaultModel: 'claude-sonnet-4-6#effort=medium',
-        models: [{ id: 'claude-sonnet-4-6#effort=medium', label: 'Sonnet 4.6 · Medium' }]
+        defaultModel: 'claude-fable-5#effort=medium',
+        models: [{ id: 'claude-fable-5#effort=medium', label: 'Fable 5 · Medium' }]
       },
       {
         engine: 'codex',

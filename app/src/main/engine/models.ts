@@ -29,12 +29,14 @@ const EFFORT_LABELS: Record<Effort, string> = {
 }
 
 const CLAUDE_BASE_MODELS = [
+  { id: 'claude-fable-5', label: 'Fable 5', contextWindow: 200_000, efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+  { id: 'claude-sonnet-5', label: 'Sonnet 5', contextWindow: 1_000_000, defaultEffort: 'high', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
   { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', contextWindow: 200_000, efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
   { id: 'claude-sonnet-4-6[1m]', label: 'Sonnet 4.6', contextWindow: 1_000_000, efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
   { id: 'claude-opus-4-8', label: 'Opus 4.8', contextWindow: 1_000_000, efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
   { id: 'claude-opus-4-8[1m]', label: 'Opus 4.8', contextWindow: 1_000_000, efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
   { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5', contextWindow: 200_000, efforts: ['low', 'medium', 'high', 'xhigh', 'max'] }
-] satisfies Array<{ id: string; label: string; contextWindow?: number; efforts: Effort[] }>
+] satisfies Array<{ id: string; label: string; contextWindow?: number; defaultEffort?: Effort; efforts: Effort[] }>
 
 const CODEX_FALLBACK_BASE = [
   {
@@ -161,7 +163,7 @@ export function listEngineModels(engineIds: string[]): EngineModelCatalog[] {
       engine: 'claude-code',
       label: ENGINE_LABELS['claude-code'],
       logoUrl: loadEngineLogoDataUrl('claude-code'),
-      defaultModel: claudeModels[0]?.id ?? withEffort('claude-sonnet-4-6', 'medium'),
+      defaultModel: withEffort('claude-fable-5', 'medium'),
       models: claudeModels
     },
     {
